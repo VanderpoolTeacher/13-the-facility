@@ -1,0 +1,30 @@
+  seeOpenDoor = true
+  seeClosedDoor = false
+  seeBehindWall = false
+  seeBehindBack = false
+  heardRun = true
+  modeAfterRun = "investigate"
+  modeLater = "pursue"
+  heardWalk = false
+  heardCrouch = false
+  pursue = "pursue"
+  captured = true
+  captureResult = "ok"
+  afterSuccessModal = "none"
+  guardDisabled = true
+  graceGiven = true
+  captured2 = true
+  failResult = "fail"
+  resetAfterFail = true
+  tileAfterFail = [20,27]
+  progressKept = true
+  timeoutReset = true
+PASS LOS: seen through open door, occluded by closed door/wall, not behind back
+PASS hearing: running heard -> investigate (then turns and sees); walking/crouching at 96px not heard
+PASS pursuit -> capture -> Space success breaks contact with grace
+PASS capture failure resets to checkpoint, progress kept
+PASS capture timeout resets safely
+PASS Esc pauses (sim time frozen) and resumes
+PASS blur clears held keys
+PASS R resets to checkpoint
+console errors: []

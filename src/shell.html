@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>13 — The Facility</title>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:#070d13;color:#d6e2e8;font:15px/1.45 "Segoe UI",system-ui,sans-serif}
+main{max-width:1180px;margin:auto;padding:10px 12px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:26px;letter-spacing:10px;margin:4px 0;color:#eaf2f4}
+header small{color:#7d95a4;letter-spacing:2px;font-size:12px}
+.layout{display:grid;grid-template-columns:minmax(0,800px) 300px;gap:14px;align-items:start}
+.screen{position:relative;outline:none}
+canvas{display:block;width:100%;aspect-ratio:4/3;background:#0b141c;border:2px solid #34505f;image-rendering:pixelated;image-rendering:crisp-edges}
+.panel{border:1px solid #2c4452;background:#0f1b24;padding:12px;font-size:14px}
+.panel h2{font-size:15px;letter-spacing:2px;margin:0 0 8px;color:#bfd3dc}
+.panel h3{font-size:12px;letter-spacing:2px;margin:14px 0 6px;color:#7d95a4}
+#phase{color:#9ab4c0;font-size:12px;letter-spacing:2px;margin-bottom:8px}
+.obj{padding:5px 2px;border-bottom:1px solid #1f313c;font-size:13px}
+.obj.cur{color:#f0d79a}
+.obj.done{color:#7fd6ad}
+.obj.todo{color:#6c8290}
+#message{min-height:52px;padding:8px;background:#0a141b;border:1px solid #27404d;margin:10px 0 6px;font-size:13px}
+#status{display:flex;justify-content:space-between;font-size:12px;letter-spacing:1px;color:#9ab4c0}
+.meter{height:8px;background:#22323b;margin:5px 0 8px}
+.meter>div{height:100%;background:#d9925f;width:0%;transition:width .15s linear}
+.controls{font-size:12px;line-height:1.7;color:#9ab4c0}
+kbd{background:#1b2b35;border:1px solid #3a5464;border-bottom-width:2px;border-radius:3px;padding:0 5px;font:12px monospace;color:#e5eef2}
+#journal{max-height:150px;overflow:auto;font-size:12.5px;color:#c9d7de}
+#journal p{margin:4px 0}
+button{background:#23404f;color:#eef5f7;border:1px solid #5d8294;padding:9px 13px;cursor:pointer;margin:3px;font:inherit;font-size:14px;letter-spacing:.5px}
+button:hover{background:#2f5467}
+button:focus-visible,button:focus{outline:3px solid #e8c47a;outline-offset:1px}
+button.primary{background:#365e73}
+#overlay{position:absolute;inset:0;background:#040a10ee;display:flex;align-items:center;justify-content:center;text-align:center;padding:22px;overflow:auto}
+#overlay.hidden{display:none}
+.dialog{max-width:560px;width:100%}
+.dialog h2{font-size:28px;letter-spacing:6px;margin:0 0 10px;color:#eef5f7}
+.dialog h2.small{font-size:18px;letter-spacing:3px}
+.dialog p{font-size:16px;line-height:1.6;color:#d6e2e8;margin:8px 0}
+.dialog .fine{font-size:13px;color:#8fa7b4}
+.dialog .warn{font-size:13px;color:#e0b06a;border:1px solid #6b5630;padding:6px;background:#1a150c}
+.row{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;margin-top:10px}
+.opt{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:4px 0;text-align:left}
+.opt button{min-width:84px}
+#caption{position:absolute;left:0;right:0;bottom:0;padding:10px 16px;background:#02060acc;color:#f1f5f7;font-size:15px;text-align:center;pointer-events:none;min-height:0}
+#caption.hidden{display:none}
+.srOnly{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.panel{order:2}}
+@media(prefers-reduced-motion:reduce){.meter>div{transition:none}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>13</h1><small>THE FACILITY</small></header>
+<div class="layout">
+<section class="screen" id="screen" tabindex="0" aria-label="Game screen">
+<canvas id="game" width="640" height="480" aria-label="Top-down stealth game view"></canvas>
+<div id="caption" class="hidden" aria-live="polite"></div>
+<div id="overlay" role="dialog" aria-modal="true"><div class="dialog" id="dialog"></div></div>
+</section>
+<aside class="panel" aria-label="Status panel">
+<h2 id="level">13 — THE FACILITY</h2>
+<div id="phase"></div>
+<div id="objectives" aria-live="polite"></div>
+<p id="message" aria-live="polite"></p>
+<div id="status"><span id="stance">—</span><span id="alertState">—</span></div>
+<div class="meter" aria-hidden="true"><div id="alert"></div></div>
+<div class="controls"><kbd>WASD</kbd>/<kbd>↑↓←→</kbd> move · <kbd>Shift</kbd> run · <kbd>Ctrl</kbd> crouch<br><kbd>E</kbd> interact (hold to keep touching) · <kbd>Space</kbd> break a capture<br><kbd>J</kbd> journal · <kbd>Esc</kbd> pause · <kbd>R</kbd> reset to checkpoint</div>
+<h3>MEMORY FRAGMENTS</h3>
+<div id="journal">No fragments recovered.</div>
+<div class="row" style="justify-content:flex-start"><button id="saveBtn" type="button">Save</button><button id="menuBtn" type="button">Menu</button></div>
+</aside>
+</div>
+</main>
+<script>
+/*SCRIPT*/
+</script>
+</body>
+</html>

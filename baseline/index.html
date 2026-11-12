@@ -1,0 +1,222 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>13 — The Facility</title><style>
+*{box-sizing:border-box}body{margin:0;background:#09121b;color:#dbe8ed;font:15px system-ui,sans-serif}main{max-width:1150px;margin:auto;padding:12px}header{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:24px;letter-spacing:8px;margin:8px 0}small{color:#8ca4b4}.layout{display:grid;grid-template-columns:minmax(0,800px) 270px;gap:15px}.screen{position:relative}canvas{display:block;width:100%;aspect-ratio:4/3;background:#152431;border:2px solid #476271;image-rendering:pixelated}.panel{border:1px solid #375160;background:#14232d;padding:13px}.panel h2{font-size:16px;margin:0 0 10px}.panel p{line-height:1.45}.obj{padding:7px;border-bottom:1px solid #2d4654}.done{color:#72d5aa}.muted{color:#92a5b2}button{background:#315569;color:white;border:1px solid #7092a1;padding:9px 12px;cursor:pointer;margin:3px}button:hover{background:#426e84}button:focus-visible{outline:3px solid #e0bd72}#overlay{position:absolute;inset:0;background:#06101be9;display:flex;align-items:center;justify-content:center;text-align:center;padding:25px}#overlay.hidden{display:none}.dialog{max-width:530px}.dialog h2{font-size:28px;letter-spacing:4px}.dialog p{font-size:17px;line-height:1.6}#message{min-height:46px;padding:9px;background:#10202b;border:1px solid #334b5c}.controls{font-size:13px;line-height:1.8;color:#b2c6d1}#journal{max-height:160px;overflow:auto;font-size:13px}.meter{height:9px;background:#34424a;margin:7px 0}.meter>div{height:100%;background:#dd976e;width:0%}@media(max-width:850px){.layout{grid-template-columns:1fr}.panel{order:2}} </style></head><body><main><header><h1>13</h1><small>THE FACILITY · COMPLETE JOURNEY BUILD</small></header><div class="layout"><section class="screen"><canvas id="game" width="640" height="480" aria-label="Top down stealth game"></canvas><div id="overlay"><div class="dialog" id="dialog"></div></div></section><aside class="panel"><h2 id="level">FLOOR 13 · DETENTION</h2><div id="phase"></div><div id="objectives"></div><p id="message" aria-live="polite"></p><div class="meter"><div id="alert"></div></div><div class="controls">WASD / arrows: move<br>Shift: run · Ctrl: crouch<br>E: interact · Space: evade capture<br>J: journal · Esc: pause<br>R: restart checkpoint</div><h2 style="margin-top:16px">MEMORY FRAGMENTS</h2><div id="journal"></div><div><button id="save">Save</button><button id="reset">New game</button></div></aside></div></main>
+<script>
+(()=>{'use strict';
+const canvas=document.querySelector('#game'),ctx=canvas.getContext('2d'),overlay=document.querySelector('#overlay'),dialog=document.querySelector('#dialog');
+const names={13:'DETENTION',12:'PROCESSING',11:'MEDICAL',10:'RESEARCH',9:'CONTAINMENT',8:'ENGINEERING',7:'SECURITY',6:'RECORDS',5:'OPERATIONS',4:'TRAINING',3:'LOGISTICS',2:'ADMINISTRATION',1:'SURFACE ACCESS'};
+const missions={
+13:{e:['Open the loose cell panel','Reach the captive’s observation window','Disable the security circuit'],r:['Reroute emergency power','Seal the breached containment room','Reach the captive']},
+12:{e:['Spoof maintenance identity','Cross the processing scanner','Interrupt the restraint cycle'],r:['Activate the restraint alarm','Secure the restraint station','Restore the lower lift']},
+11:{e:['Read the diagnostic console','Start the sterilization cycle','Bypass the biometric scanner'],r:['Restore isolation power','Draw the subject into isolation','Seal the chamber']},
+10:{e:['Redirect the laboratory arm','Complete the cognitive sequence','Synchronize the laboratories'],r:['Redirect ventilation','Close the contaminated chamber','Restore elevator control']},
+9:{e:['Release Airlock A','Redirect surveillance','Release Airlock B'],r:['Activate chamber alarm','Seal the intact chamber','Reset containment controls']},
+8:{e:['Start Generator A','Reroute security power','Start Generator B'],r:['Route auxiliary power','Activate maintenance robot','Clear the electrical corridor']},
+7:{e:['Disable camera relay','Redirect the security drone','Cancel elevator lockdown'],r:['Trigger a false alarm','Override security protocol','Restore lift authorization']},
+6:{e:['Retrieve archive code A','Retrieve archive code B','Unlock the records index'],r:['Operate the retrieval robot','Move collapsed shelving','Restore lift access']},
+5:{e:['Start maintenance authorization','Reach operations override','Release elevator lockdown'],r:['Cancel emergency lockdown','Issue evacuation command','Open the lower lift']},
+4:{e:['Enable the training simulator','Deploy a robotic decoy','Open the elevator'],r:['Activate the training decoy','Seal the training room','Open the lower lift']},
+3:{e:['Redirect the cargo forklift','Run the conveyor','Clear the elevator route'],r:['Restart the damaged conveyor','Move the debris','Reach the lower lift']},
+2:{e:['Assign maintenance clearance','Access executive terminal','Authorize upper elevator'],r:['Recover emergency token','Override administrative security','Open lower elevator']},
+1:{e:['Disable perimeter surveillance','Unlock the exterior gate','Step into daylight'],r:['Bypass damaged perimeter controls','Restore lift power','Enter the lower elevator']}
+};
+const memories={13:'A worn token. Two children laughing in the summer rain.',12:'Intake records list two subjects transferred together.',11:'A medical recording: two voices promising not to leave.',10:'The voice behind the glass knew your name before you did.',9:'The alterations were deliberate. The aggression was anticipated.',8:'The facility consumes more power than the surrounding city.',7:'Security footage shows that you tried to escape once before.',6:'A small house, a creek, and two bicycles in the grass.',5:'Government directive: research continuity supersedes subject welfare.',4:'Training materials describe human subjects as inventory.',3:'Shipping records show people transported as classified cargo.',2:'Authorization bears the signatures of human officials.',1:'The first sunrise you can remember. Someone is missing.'};
+const rooms={WA:[3,13,4,10,15,7],EA:[26,36,4,10,24,7],WB:[3,13,13,19,15,16],EB:[26,36,13,19,24,16],WC:[3,13,22,26,15,24],EC:[26,36,22,26,24,24]};
+const route={13:{e:['WA','EA','EC'],r:['EC','WB','EA']},12:{e:['WA','EB','WC'],r:['WC','EC']},11:{e:['WB','WC','EA'],r:['EC','EB']},10:{e:['WA','EA','EC'],r:['EB','EC']},9:{e:['WC','WB','EB'],r:['WA','EB']},8:{e:['WA','EC','EA'],r:['EC','WC']},7:{e:['WA','EA','EC'],r:['WB','EA']},6:{e:['WA','EA','WB'],r:['EC','WC']},5:{e:['WB','EA'],r:['EA','EC']},4:{e:['WA','WC'],r:['WC','EA']},3:{e:['EB','WB'],r:['WB','EB']},2:{e:['WB','EA'],r:['EC','WB']},1:{e:['EA','WB'],r:['WB','EC']}};
+const descriptions=['The automated voice is calm. It has no anger, and no reason to stop.','The people who built this place have already left. The instructions remain.','There is no malfunction. Every action follows an authorized directive.'];
+const keys=new Set();let state,grid,guards=[],objects=[],doors=[],last=0,uiTick=0,clock=0,alert=0,freeze=0,capture=0,escapeWindow=0,paused=false,notice='';
+function makeState(){return {floor:13,phase:'e',step:0,memories:[],gender:'female',checkpoints:0,returnChosen:false,finished:false};}
+function save(){localStorage.setItem('thirteen_fullgame_v1',JSON.stringify(state));say('Checkpoint saved.');}
+function load(){try{const x=JSON.parse(localStorage.getItem('thirteen_fullgame_v1'));return x&&x.floor>=1&&x.floor<=13?x:null}catch{return null}}
+function say(t){notice=t;document.querySelector('#message').textContent=t;}
+function carve(x,y){if(x>0&&x<39&&y>0&&y<29)grid[y][x]=0}
+function centerTile(x,y){return {x:(x+.5)*32,y:(y+.5)*32}}
+function roomCenter(name){const a=rooms[name];return centerTile(Math.floor((a[0]+a[1])/2),Math.floor((a[2]+a[3])/2))}
+function build(){
+ grid=Array.from({length:30},()=>Array(40).fill(1));doors=[];objects=[];guards=[];alert=0;capture=0;escapeWindow=0;
+ for(let y=3;y<=26;y++)for(let x=18;x<=22;x++)carve(x,y);
+ carve(20,2);carve(20,27);
+ for(const [name,a] of Object.entries(rooms)){
+  for(let y=a[2];y<=a[3];y++)for(let x=a[0];x<=a[1];x++)carve(x,y);
+  for(let x=Math.min(a[4],name[0]==='W'?17:23);x<=Math.max(a[4],name[0]==='W'?17:23);x++)carve(x,a[5]);
+  // Make explicit room-to-passage opening.
+  carve(name[0]==='W'?14:25,a[5]);
+  doors.push({name,x:a[4],y:a[5],open:false});
+ }
+ const sequence=route[state.floor][state.phase],task=missions[state.floor][state.phase];
+ // Required consoles appear in sequence rooms; their doors are open by default.
+ // The challenge is reaching each console under surveillance.
+ for(const d of doors)d.open=true;
+ for(let i=0;i<task.length;i++){
+  const pos=roomCenter(sequence[Math.min(i,sequence.length-1)]);
+  objects.push({type:'objective',index:i,...pos,label:task[i]});
+ }
+ const mem=roomCenter(state.floor%2?'WB':'EA');
+ objects.push({type:'memory',...mem,label:'Memory fragment'});
+ const from=state.phase==='e'?[20,27]:[20,2];state.player=centerTile(...from);
+ state.player.facing=-Math.PI/2;state.player.stance='walk';
+ const count=state.floor===13?2:state.floor===1?2:3;
+ for(let i=0;i<count;i++){
+  const gx=19+(i%2)*2,gy=7+i*7;
+  guards.push({x:(gx+.5)*32,y:(gy+.5)*32,anchorX:(gx+.5)*32,anchorY:(gy+.5)*32,
+    direction:i%2?1:-1,angle:Math.PI/2,mode:'patrol',disabled:0,speed:50+(i%2)*10});
+ }
+ document.querySelector('#level').textContent=`FLOOR ${state.floor} · ${names[state.floor]}`;
+ document.querySelector('#phase').textContent=state.phase==='e'?'ASCENT — ESCAPE':'DESCENT — RETURN';
+ updateUI();say(state.phase==='r'?'Emergency protocols are failing. Keep moving.':'Security systems online. Stay out of sight.');
+}
+function updateUI(){
+ document.querySelector('#objectives').innerHTML=missions[state.floor][state.phase].map((t,i)=>`<div class="obj ${i<state.step?'done':i===state.step?'':'muted'}">${i<state.step?'✓':i===state.step?'◆':'○'} ${t}</div>`).join('')+
+ `<div class="obj ${state.step>=3?'done':''}">${state.step>=3?'✓':'○'} ${state.floor===1&&state.phase==='e'?'Surface threshold':'Reach the marked elevator'}</div>`;
+ document.querySelector('#journal').innerHTML=state.memories.length?state.memories.map(f=>`<p>Floor ${f}: ${memories[f]}</p>`).join(''):'No fragments recovered.';
+}
+function show(title,body,buttons){
+ paused=true;overlay.classList.remove('hidden');dialog.replaceChildren();
+ const h=document.createElement('h2');h.textContent=title;dialog.append(h);
+ for(const paragraph of body){const p=document.createElement('p');p.textContent=paragraph;dialog.append(p)}
+ for(const [label,fn] of buttons){const b=document.createElement('button');b.textContent=label;b.onclick=()=>{overlay.classList.add('hidden');paused=false;fn()};dialog.append(b)}
+}
+function start(){
+ show('13',['You wake beneath thirteen floors of concrete. You cannot remember how you arrived.','An automated voice says: “Subject 013. Cognitive recovery assessment initiated. Please remain in your assigned containment area.”','Somewhere nearby, a person is waiting for you.'],[['Female protagonist',()=>{state=makeState();state.gender='female';build()}],['Male protagonist',()=>{state=makeState();state.gender='male';build()}],...(load()?[['Continue saved game',()=>{state=load();build()}]]:[])]);
+}
+function canWalk(x,y){
+ const r=10,pts=[[x-r,y-r],[x+r,y-r],[x-r,y+r],[x+r,y+r]];
+ return pts.every(([px,py])=>{const tx=Math.floor(px/32),ty=Math.floor(py/32);return grid[ty]&&grid[ty][tx]===0&&!doors.some(d=>!d.open&&d.x===tx&&d.y===ty)});
+}
+function sight(a,b){
+ const distance=Math.hypot(b.x-a.x,b.y-a.y);
+ for(let t=8;t<distance;t+=8){const x=a.x+(b.x-a.x)*t/distance,y=a.y+(b.y-a.y)*t/distance;if(!canWalk(x,y))return false}
+ return true;
+}
+function near(o){return Math.hypot(o.x-state.player.x,o.y-state.player.y)<48}
+function interact(){
+ if(paused||!state)return;
+ if(capture){return}
+ const obj=objects.find(o=>near(o)&&((o.type==='objective'&&o.index===state.step)||(o.type==='memory'&&!state.memories.includes(state.floor))));
+ if(obj){
+  if(obj.type==='memory'){state.memories.push(state.floor);say(memories[state.floor]);updateUI();save();return}
+  if(state.floor===13&&state.phase==='e'&&state.step===1){
+   show('THE PERSON BEHIND THE GLASS',['The injured captive looks up. Recognition flashes across their face.','“You came back,” they whisper. “You always do.”','You have no memory of them. The sound of their voice hurts.'],[['Continue',()=>{state.step++;updateUI();save()}]]);return;
+  }
+  state.step++;updateUI();say(`Completed: ${obj.label}. ${descriptions[(state.floor+state.step)%3]}`);save();return;
+ }
+ const exit=state.phase==='e'?centerTile(20,2):centerTile(20,27);
+ if(near(exit)){
+  if(state.step<3){say('ELEVATOR LOCKED — complete the required controls first.');return}
+  advance();return;
+ }
+ say('Move closer to the glowing console or elevator, then press E.');
+}
+function advance(){
+ if(state.floor===1&&state.phase==='e'){
+  show('DAYLIGHT',['The gate opens. Wind moves through the trees. For the first time, there are no walls above you.','You can leave. You are free.','But someone is still below, thirteen floors down.'],[['LEAVE — Escape Complete',()=>ending(false)],['GO BACK',()=>{state.phase='r';state.returnChosen=true;state.step=0;build();save()}]]);return;
+ }
+ if(state.floor===13&&state.phase==='r'){ending(true);return}
+ state.floor+=state.phase==='e'?-1:1;state.step=0;build();save();
+}
+function ending(returned){
+ state.finished=true;save();
+ if(!returned){
+  show('ESCAPE COMPLETE',['You walk toward the horizon. Behind you, the facility sinks beneath the earth.','You have survived. You will live.','Somewhere in the quiet, a voice you cannot place calls a name you cannot remember.'],[['Play again',()=>{state=makeState();build();start()}]]);
+ }else{
+  show('13 — COMPLETE',['You reach the shattered cell. The captive is waiting. Neither of you can stand.','They take your hand and whisper the nickname only they ever used: “Little Star.”','Memories come without warning: two children racing through rain; bicycles by a creek; a promise made in darkness; years of laughter, separation, and finding each other again.','You cannot name what you were to each other. You know only that you were never alone.','The lights go out. Your hands remain together.'],[['Begin again',()=>{state=makeState();build();start()}]]);
+ }
+}
+function checkpoint(){state.player=centerTile(20,state.phase==='e'?27:2);capture=0;alert=0;guards.forEach(g=>{g.x=g.anchorX;g.y=g.anchorY;g.mode='patrol'});say('Security reset. Objective progress retained.')}
+function update(dt){
+ if(paused||!state||state.finished)return;
+ clock+=dt;const p=state.player;
+ if(capture){
+  capture-=dt;escapeWindow-=dt;
+  if(capture<=0){checkpoint();return}
+  return;
+ }
+ let dx=Number(keys.has('d')||keys.has('arrowright'))-Number(keys.has('a')||keys.has('arrowleft'));
+ let dy=Number(keys.has('s')||keys.has('arrowdown'))-Number(keys.has('w')||keys.has('arrowup'));
+ p.stance=keys.has('control')?'crouch':keys.has('shift')?'run':'walk';
+ if(dx||dy){
+  const len=Math.hypot(dx,dy);dx/=len;dy/=len;p.facing=Math.atan2(dy,dx);
+  const speed={walk:90,run:150,crouch:45}[p.stance],move=speed*dt;
+  if(canWalk(p.x+dx*move,p.y))p.x+=dx*move;
+  if(canWalk(p.x,p.y+dy*move))p.y+=dy*move;
+ }
+ for(const g of guards){
+  const distance=Math.hypot(p.x-g.x,p.y-g.y),angle=Math.atan2(p.y-g.y,p.x-g.x);
+  const delta=Math.atan2(Math.sin(angle-g.angle),Math.cos(angle-g.angle));
+  const visible=distance<160&&Math.abs(delta)<Math.PI/6&&sight(g,p);
+  const noise=p.stance==='run'?128:p.stance==='walk'&& (dx||dy)?48:0;
+  const heard=noise>distance&&sight(g,p);
+  if(visible){g.mode='pursue';alert=Math.min(100,alert+dt*95)}
+  else if(heard){g.mode='investigate';alert=Math.min(100,alert+dt*15)}
+  else {if(g.mode!=='patrol'&&distance>190)g.mode='patrol'}
+  let target;
+  if(g.mode==='pursue'||g.mode==='investigate'){target=p;g.angle=angle}
+  else{
+   const ty=g.anchorY+g.direction*100;
+   if(Math.abs(g.y-ty)<5)g.direction*=-1;
+   target={x:g.anchorX,y:g.anchorY+g.direction*100};
+   g.angle=Math.atan2(target.y-g.y,target.x-g.x);
+  }
+  const td=Math.hypot(target.x-g.x,target.y-g.y);
+  if(td>3){const s=Math.min(td,dt*(g.mode==='pursue'?100:g.speed));const nx=g.x+(target.x-g.x)*s/td,ny=g.y+(target.y-g.y)*s/td;if(canWalk(nx,ny)){g.x=nx;g.y=ny}else if(g.mode==='patrol')g.direction*=-1}
+  if(distance<23&&g.mode==='pursue'){
+   capture=3;escapeWindow=3;say('CAPTURED — press SPACE when the moving marker crosses the center!');
+  }
+ }
+ alert=Math.max(0,alert-dt*2);document.querySelector('#alert').style.width=alert+'%';
+}
+function draw(){
+ ctx.fillStyle='#101c27';ctx.fillRect(0,0,640,480);
+ if(!state)return;
+ const p=state.player,camX=Math.max(0,Math.min(640,p.x-320)),camY=Math.max(0,Math.min(480,p.y-240));
+ ctx.save();ctx.translate(-camX,-camY);
+ const x0=Math.max(0,Math.floor(camX/32)),x1=Math.min(40,Math.ceil((camX+640)/32)),y0=Math.max(0,Math.floor(camY/32)),y1=Math.min(30,Math.ceil((camY+480)/32));
+ for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+  const wall=grid[y][x];ctx.fillStyle=wall?'#243947':'#344c58';ctx.fillRect(x*32,y*32,32,32);
+  ctx.strokeStyle=wall?'#314858':'#3d5867';ctx.strokeRect(x*32+.5,y*32+.5,31,31);
+  if(wall){ctx.fillStyle='#2b4150';ctx.fillRect(x*32+3,y*32+3,26,4)}
+ }
+ for(const d of doors){ctx.fillStyle=d.open?'#4d9c86':'#d89965';ctx.fillRect(d.x*32+8,d.y*32+2,16,28)}
+ const exit=state.phase==='e'?centerTile(20,2):centerTile(20,27);
+ ctx.fillStyle=state.step>=3?'#7ee2b2':'#9aafbb';ctx.fillRect(exit.x-13,exit.y-13,26,26);
+ ctx.fillStyle='#07171e';ctx.font='bold 10px monospace';ctx.fillText('LIFT',exit.x-12,exit.y+3);
+ for(const o of objects){
+  if(o.type==='objective'&&o.index<state.step)continue;
+  if(o.type==='memory'&&state.memories.includes(state.floor))continue;
+  ctx.fillStyle=o.type==='memory'?'#b8a6e5':o.index===state.step?'#e5c47c':'#748c98';
+  ctx.fillRect(o.x-10,o.y-10,20,20);ctx.strokeStyle='#f4e8c8';ctx.strokeRect(o.x-10,o.y-10,20,20);
+  if(near(o)){ctx.fillStyle='#fff';ctx.font='12px monospace';ctx.fillText('E',o.x-4,o.y-17)}
+ }
+ for(const g of guards){
+  ctx.beginPath();ctx.moveTo(g.x,g.y);ctx.arc(g.x,g.y,160,g.angle-Math.PI/6,g.angle+Math.PI/6);ctx.closePath();
+  ctx.fillStyle=g.mode==='pursue'?'#d14b4b33':'#e7c17d18';ctx.fill();
+  ctx.fillStyle=g.mode==='pursue'?'#f06c65':'#9eabb4';ctx.fillRect(g.x-11,g.y-12,22,24);
+  ctx.fillStyle='#e85c59';ctx.fillRect(g.x-7,g.y-5,14,5);
+ }
+ ctx.fillStyle=p.stance==='crouch'?'#77b9a6':'#d7e7e5';ctx.beginPath();ctx.arc(p.x,p.y,p.stance==='crouch'?9:11,0,Math.PI*2);ctx.fill();
+ ctx.strokeStyle='#f4c27a';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+Math.cos(p.facing)*17,p.y+Math.sin(p.facing)*17);ctx.stroke();
+ ctx.restore();
+ ctx.fillStyle='#06131bc9';ctx.fillRect(0,0,640,30);ctx.fillStyle='#e7f2f2';ctx.font='14px monospace';ctx.fillText(`F${state.floor} ${state.phase==='e'?'ASCEND':'RETURN'} | ${names[state.floor]} | ${state.step}/3`,10,20);
+ if(capture){
+  ctx.fillStyle='#190b0bdc';ctx.fillRect(0,0,640,480);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='bold 24px monospace';ctx.fillText('SECURITY RESTRAINT',320,180);
+  ctx.font='16px monospace';ctx.fillText('Press SPACE when the marker is centered',320,215);
+  ctx.fillStyle='#687a7d';ctx.fillRect(170,250,300,15);ctx.fillStyle='#79d8b0';ctx.fillRect(304,250,32,15);
+  const marker=170+Math.abs(Math.sin(clock*5))*300;ctx.fillStyle='#fff';ctx.fillRect(marker-3,244,6,27);
+  ctx.fillText(`${capture.toFixed(1)} s`,320,305);ctx.textAlign='left';
+ }
+}
+function frame(t){const dt=Math.min(.033,(t-last)/1000||0);last=t;update(dt);draw();requestAnimationFrame(frame)}
+window.addEventListener('keydown',e=>{
+ const k=e.key.toLowerCase();if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault();keys.add(k);
+ if(k==='e')interact();
+ if(k===' '&&capture){const marker=170+Math.abs(Math.sin(clock*5))*300;if(Math.abs(marker-320)<18){capture=0;alert=100;guards.forEach(g=>g.mode='investigate');say('You slipped free. Security alert increased.')}else{capture=Math.max(.15,capture-.5);say('Missed the timing. Try again.')}} 
+ if(k==='r'&&!paused)checkpoint();
+ if(k==='escape'&&state&&!capture){if(paused){overlay.classList.add('hidden');paused=false}else show('PAUSED',['The facility is still waiting.'],[['Resume',()=>{}],['Save',()=>save()]])}
+ if(k==='j'&&state)show('MEMORY JOURNAL',state.memories.length?state.memories.map(f=>`Floor ${f}: ${memories[f]}`):['No memories recovered.'],[['Continue',()=>{}]]);
+});
+window.addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+window.addEventListener('blur',()=>keys.clear());
+document.querySelector('#save').onclick=()=>state&&save();
+document.querySelector('#reset').onclick=()=>{localStorage.removeItem('thirteen_fullgame_v1');state=makeState();start()};
+state=makeState();start();requestAnimationFrame(frame);
+})();
+</script></body></html>

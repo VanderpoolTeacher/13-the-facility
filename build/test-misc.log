@@ -1,0 +1,12 @@
+PASS fragment collected on floor 6 ascent
+PASS fragment survives save/reload
+PASS no duplicate entry on descent
+PASS J opens journal with the fragment
+PASS first title button focused (Continue)
+PASS arrow moves focus, Enter activates (New game -> SUBJECT 13)
+PASS options toggle persists ({"captions":false,"mute":false,"reduced":false})
+PASS old v1 save explained in the interface: An older prototype save (v1) was found. That format is not supported by this build; start a new game.
+PASS invalid save rejected and explained
+PASS 900px viewport: canvas 876px wide, panel 876px
+console errors (test page): []
+PASS normal mode: no test hooks, title shown; console errors: []

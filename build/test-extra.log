@@ -1,0 +1,6 @@
+PASS E from inside the lab does not reach the corridor panel through the wall (null)
+PASS same panel reachable from the corridor side
+PASS door not usable diagonally through a wall corner (null)
+PASS reunion plays with a memory and the ending acknowledges it
+PASS pattern lock UI opens at the Testing 1 door
+console errors: []

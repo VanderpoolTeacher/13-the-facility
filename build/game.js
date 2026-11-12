@@ -1,0 +1,1562 @@
+/* --- 00_core.js --- */
+(()=>{'use strict';
+/* ============================================================
+   13 — The Facility · single-file runtime
+   Sections: core/audio · engine · floor 13 · floors 12–1 · scenes · main
+   ============================================================ */
+const W=40,H=30,T=32,VW=640,VH=480,STEP=1/60;
+const TEST=typeof location!=='undefined'&&/test/.test(location.hash);
+const $=s=>document.querySelector(s);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const tc=(x,y)=>({x:(x+.5)*T,y:(y+.5)*T});
+const key=(x,y)=>x+','+y;
+const lerp=(a,b,t)=>a+(b-a)*t;
+function rng(seed){let s=seed>>>0||1;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296}}
+const rand=rng((Date.now()&0xffff)|1);
+
+/* ---------- Audio: fully synthesized, created on first gesture ---------- */
+const Audio13=(()=>{
+ let ac=null,master=null,muted=false,ambient=null;
+ function ctx(){
+  if(ac)return ac;
+  try{ac=new (window.AudioContext||window.webkitAudioContext)();master=ac.createGain();master.gain.value=muted?0:.5;master.connect(ac.destination)}catch(e){ac=null}
+  return ac;
+ }
+ function resume(){const c=ctx();if(c&&c.state==='suspended')c.resume()}
+ function setMuted(m){muted=m;if(master)master.gain.value=m?0:.5}
+ function tone(f,dur,type='square',vol=.3,when=0,slide=0){
+  const c=ctx();if(!c)return;const t=c.currentTime+when;
+  const o=c.createOscillator(),g=c.createGain();o.type=type;o.frequency.setValueAtTime(f,t);
+  if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(20,f+slide),t+dur);
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(vol,t+.01);g.gain.exponentialRampToValueAtTime(.001,t+dur);
+  o.connect(g);g.connect(master);o.start(t);o.stop(t+dur+.02);
+ }
+ function noise(dur,vol=.2,when=0,lp=1200){
+  const c=ctx();if(!c)return;const t=c.currentTime+when;
+  const b=c.createBuffer(1,Math.ceil(c.sampleRate*dur),c.sampleRate),d=b.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  const s=c.createBufferSource();s.buffer=b;const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=lp;
+  const g=c.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);
+  s.connect(f);f.connect(g);g.connect(master);s.start(t);
+ }
+ const sfx={
+  tap(when=0){tone(900,.06,'triangle',.25,when);noise(.03,.08,when,3000)},
+  taps(when=0){/* three, pause, two — provisional motif; never decoded */
+   const g=.22;[0,1,2].forEach(i=>sfx.tap(when+i*g));[0,1].forEach(i=>sfx.tap(when+3*g+.55+i*g));},
+  step(stance){if(stance==='crouch')return;noise(.05,stance==='run'?.12:.06,0,stance==='run'?900:600)},
+  robotStep(far){noise(.09,far?.05:.14,0,300);tone(70,.08,'sine',far?.08:.2)},
+  door(){noise(.25,.18,0,500);tone(160,.25,'sawtooth',.08,0,-60)},
+  doorDeny(){tone(220,.12,'square',.2);tone(180,.18,'square',.2,.13)},
+  beep(){tone(1200,.07,'square',.15)},
+  confirm(){tone(880,.08,'square',.15);tone(1320,.12,'square',.15,.09)},
+  deny(){tone(200,.2,'square',.2);tone(150,.25,'square',.2,.18)},
+  voice(){tone(520,.05,'sine',.12);tone(700,.07,'sine',.12,.06)},
+  alarm(){for(let i=0;i<3;i++){tone(640,.18,'square',.18,i*.4);tone(480,.18,'square',.18,i*.4+.2)}},
+  pulse(){/* electrical touch: a dry crackle, not a hum */noise(.08,.14,0,2500);tone(60,.1,'sine',.12);noise(.05,.1,.12,2500)},
+  spark(){noise(.06,.2,0,4000);tone(2000,.05,'sawtooth',.06)},
+  shock(){noise(.3,.3,0,3000);tone(90,.3,'sawtooth',.2)},
+  capture(){tone(300,.3,'sawtooth',.25,0,-150);noise(.3,.15)},
+  escape(){tone(500,.1,'square',.15);tone(750,.1,'square',.15,.1);tone(1000,.2,'square',.15,.2)},
+  lift(){noise(.6,.12,0,250);tone(110,.7,'sine',.15);tone(165,.5,'sine',.08,.3)},
+  gate(){noise(.8,.2,0,400);tone(80,.9,'sawtooth',.12)},
+  memory(){[523,659,784,1046].forEach((f,i)=>tone(f,.35,'sine',.12,i*.12))},
+  growl(){tone(110,.35,'sawtooth',.18,0,-40);noise(.3,.1,0,400)},
+  lure(){[0,1,2,3].forEach(i=>tone(1500,.08,'square',.1,i*.25))},
+  wind(){noise(2.5,.08,0,500)},
+  chime(){[880,1108,1318].forEach((f,i)=>tone(f,.5,'sine',.1,i*.15))},
+  low(){tone(55,1.2,'sine',.2)},
+ };
+ function ambientOn(kind){
+  const c=ctx();if(!c)return;ambientOff();
+  const o=c.createOscillator(),g=c.createGain(),f=c.createBiquadFilter();
+  o.type='sawtooth';o.frequency.value=kind==='return'?38:48;f.type='lowpass';f.frequency.value=kind==='return'?140:90;
+  g.gain.value=kind==='return'?.05:.03;o.connect(f);f.connect(g);g.connect(master);o.start();ambient={o,g};
+ }
+ function ambientOff(){if(ambient){try{ambient.o.stop()}catch(e){}ambient=null}}
+ return {ctx,resume,setMuted,sfx,ambientOn,ambientOff,get muted(){return muted}};
+})();
+const SFX=Audio13.sfx;
+
+/* --- 10_engine.js --- */
+/* ============================================================
+   ENGINE · world, builder, stealth, hazards, capture, save, transitions
+   ============================================================ */
+const NAMES={13:'DETENTION',12:'PROCESSING',11:'MEDICAL',10:'RESEARCH',9:'CONTAINMENT',8:'ENGINEERING',7:'SECURITY',6:'RECORDS',5:'OPERATIONS',4:'TRAINING',3:'LOGISTICS',2:'ADMINISTRATION',1:'SURFACE ACCESS'};
+const MEMORIES={13:'A worn metal token, scratched with a lopsided star. Two children laughing in summer rain. You do not know whose hand you are holding.',12:'Intake record 0013/0014: two subjects admitted together, same transport, same date. Next of kin: each other.',11:'A recording. Two voices under anesthesia, promising not to leave. One of them is yours.',10:'A cognitive trial log. The voice behind the glass said your name before the examiner did. The name has been redacted.',9:'Modification protocol, approved. “Aggression and tissue change are expected outcomes.” Someone signed it.',8:'Power-consumption ledger. The facility draws more than the town above it. Nobody up there asked why.',7:'Security footage, undated. You, running down this corridor. You did not get far. You do not remember it.',6:'A small house, a creek, two bicycles in the grass. Two children tapping on a pipe between rooms. One of them keeps making the same mistake, and the other starts making it on purpose.',5:'Directive 7-C: research continuity supersedes subject welfare. Issued by a human office.',4:'Warden training slides. Subjects are referred to as inventory. Escape attempts are referred to as shrinkage.',3:'Shipment manifest. Two units of classified cargo, live, handled with care. The dates match the intake record.',2:'The authorization carries three human signatures and a government seal. The AI only ever did what it was told.',1:'The first sunrise you can remember. It is beautiful. Someone should be standing beside you.'};
+const ROOMS={WA:[3,13,4,10,15,7],EA:[26,36,4,10,24,7],WB:[3,13,13,19,15,16],EB:[26,36,13,19,24,16],WC:[3,13,22,26,15,24],EC:[26,36,22,26,24,24]};
+const FLOOR={}; // FLOOR[n][phase] definitions registered by floor modules
+const SAVE_KEY='thirteen_v2',OPT_KEY='thirteen_opts',OLD_KEY='thirteen_fullgame_v1';
+
+let G=null; // durable game state (saved)
+let R=null; // runtime floor state (rebuilt)
+const OPT={captions:true,mute:false,reduced:false};
+const keys=new Set(),pressed=new Set();
+let modal='title'; // 'none' | 'dialog' | 'scene' | 'grid' | 'keypad' | 'sequence' | 'capture' | 'title'
+let storageNote='';
+
+function newGame(gender){
+ return {v:2,gender,floor:13,phase:'e',floors:{},memories:[],learned:{pattern:null,f12:false},attempts:[],finished:false,ending:null,returnChosen:false,stage:'assess',saved:0};
+}
+function fsOf(floor,phase){const k=floor+phase;return G.floors[k]||(G.floors[k]={})}
+function FS(){return fsOf(G.floor,G.phase)}
+function pronoun(){return G.gender==='female'?{they:'he',them:'him',their:'his',cap:'He'}:{they:'she',them:'her',their:'her',cap:'She'}}
+
+/* ---------- Storage ---------- */
+function saveGame(){
+ if(!G)return false;G.saved=Date.now();
+ try{localStorage.setItem(SAVE_KEY,JSON.stringify(G));return true}catch(e){storageNote='Saving is unavailable in this browser context; progress will not persist.';ui.say(storageNote);return false}
+}
+function validateSave(x){
+ if(!x||typeof x!=='object'||x.v!==2)return null;
+ if(!(x.floor>=1&&x.floor<=13)||!['e','r'].includes(x.phase))return null;
+ if(!['female','male'].includes(x.gender))return null;
+ if(typeof x.floors!=='object'||x.floors===null)x.floors={};
+ if(!Array.isArray(x.memories))x.memories=[];
+ x.memories=x.memories.filter(n=>Number.isInteger(n)&&n>=1&&n<=13);
+ if(!x.learned||typeof x.learned!=='object')x.learned={pattern:null,f12:false};
+ if(!Array.isArray(x.attempts))x.attempts=[];
+ x.finished=!!x.finished;x.returnChosen=!!x.returnChosen;
+ if(typeof x.stage!=='string')x.stage='assess';
+ return x;
+}
+function loadGame(){
+ try{
+  const raw=localStorage.getItem(SAVE_KEY);
+  if(raw){const v=validateSave(JSON.parse(raw));if(v)return v;storageNote='A saved game was found but could not be validated. It was ignored.';return null}
+  if(localStorage.getItem(OLD_KEY)){storageNote='An older prototype save (v1) was found. That format is not supported by this build; start a new game.'}
+ }catch(e){storageNote='Saved games are unavailable in this browser context.'}
+ return null;
+}
+function loadOpts(){try{const o=JSON.parse(localStorage.getItem(OPT_KEY));if(o)Object.assign(OPT,o)}catch(e){}Audio13.setMuted(OPT.mute)}
+function saveOpts(){try{localStorage.setItem(OPT_KEY,JSON.stringify(OPT))}catch(e){}Audio13.setMuted(OPT.mute)}
+
+/* ---------- World builder ---------- */
+function makeRuntime(){
+ return {grid:Array.from({length:H},()=>new Uint8Array(W).fill(1)),kind:Array.from({length:H},()=>Array(W).fill('w')),paint:[],labels:[],
+  doors:[],props:[],items:[],guards:[],subjects:[],hazards:[],hides:new Set(),effects:[],
+  timers:{},rt:{},resets:0,t:0,player:null,checkpoint:null,entry:null,exit:null,def:null,alert:0,alertState:'HIDDEN',grace:0,seenT:0,
+  capture:null,hold:null,holdT:0,prompt:null,static:null,dirty:true,flash:0,shake:0,lightsUp:0,msgT:0,fx:[],footT:0};
+}
+const B={
+ get fs(){return FS()},get rt(){return R.rt},get R(){return R},get G(){return G},
+ wall(x,y){if(x>=0&&x<W&&y>=0&&y<H){R.grid[y][x]=1;R.kind[y][x]='w'}},
+ floor(x,y,k='f'){if(x>=0&&x<W&&y>=0&&y<H){R.grid[y][x]=0;R.kind[y][x]=k}},
+ rect(x0,y0,x1,y1,k='f'){for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)B.floor(x,y,k)},
+ wallRect(x0,y0,x1,y1){for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)B.wall(x,y)},
+ box(x0,y0,x1,y1,k='f'){B.wallRect(x0-1,y0-1,x1+1,y1+1);B.rect(x0,y0,x1,y1,k)},
+ isWall(x,y){return !(x>=0&&x<W&&y>=0&&y<H)||R.grid[y][x]===1},
+ paint(x,y,k){R.paint.push({x,y,k})},
+ label(x,y,text,color){R.labels.push({x,y,text,color})},
+ hide(x,y){R.hides.add(key(x,y))},
+ door(o){const d=Object.assign({open:false,locked:null,label:'Door',kind:'door',auto:0,timer:0,persist:true,x:0,y:0},o);
+  const i=R.doors.findIndex(x=>x.id===d.id);if(i>=0)R.doors.splice(i,1); // a floor redefining a skeleton door replaces it
+  if(d.persist&&FS().d&&FS().d[d.id])d.open=true;R.grid[d.y][d.x]=0;R.kind[d.y][d.x]='d';R.doors.push(d);return d},
+ doorById(id){return R.doors.find(d=>d.id===id)},
+ openDoor(id,persist){const d=B.doorById(id);if(!d||d.open)return;d.open=true;if(d.auto)d.timer=d.auto;if(persist!==false&&d.persist&&!d.auto){const fs=FS();(fs.d||(fs.d={}))[id]=1}SFX.door();R.dirty=true},
+ closeDoor(id){const d=B.doorById(id);if(!d||!d.open)return;d.open=false;d.timer=0;const fs=FS();if(fs.d)delete fs.d[id];SFX.door();R.dirty=true},
+ prop(o){const p=Object.assign({solid:true,w:1,h:1,kind:'crate',x:0,y:0},o);R.props.push(p);return p},
+ item(o){const it=Object.assign({solid:false,w:1,h:1,kind:'console',visible:()=>true,prompt:null,reach:46},o);
+  it.px=(it.x+it.w/2)*T;it.py=(it.y+it.h/2)*T;R.items.push(it);return it},
+ guard(o){const g=Object.assign({kind:'robot',speed:55,vision:160,fov:Math.PI/3,mode:'patrol',wp:0,path:null,pathT:0,lookT:0,disabled:0,route:[],angle:Math.PI/2,active:true,label:'WARDEN'},o);
+  if(o.tx!==undefined){const c=tc(o.tx,o.ty);g.x=c.x;g.y=c.y}g.home={x:g.x,y:g.y,angle:g.angle};R.guards.push(g);return g},
+ subject(o){const s=Object.assign({kind:'subject',speed:70,mode:'roam',target:null,wait:0,area:[18,3,22,26],path:null,pathT:0,label:'ESCAPED SUBJECT',active:true,linger:0},o);
+  if(o.tx!==undefined){const c=tc(o.tx,o.ty);s.x=c.x;s.y=c.y}s.home={x:s.x,y:s.y};R.subjects.push(s);return s},
+ hazard(o){const h=Object.assign({kind:'electric',active:()=>true,msg:'You are thrown back.',tiles:[]},o);h.set=new Set(h.tiles.map(([x,y])=>key(x,y)));R.hazards.push(h);return h},
+ has(n){return !!FS()[n]},
+ flag(n,v=true){const fs=FS();if(fs[n]===v)return;fs[n]=v;ui.objectives();saveGame();},
+ timer(n,sec){R.timers[n]=sec;(R.timerMax||(R.timerMax={}))[n]=sec},left(n){return R.timers[n]||0},active(n){return (R.timers[n]||0)>0},
+ say(t){ui.say(t)},announce(t){ui.announce(t)},
+ effect(e){R.fx.push(Object.assign({t:0,dur:.6},e))},
+ inRoom(e,rm){const [x0,x1,y0,y1]=rm;const tx=Math.floor(e.x/T),ty=Math.floor(e.y/T);return tx>=x0&&tx<=x1&&ty>=y0&&ty<=y1},
+ tileOf(e){return [Math.floor(e.x/T),Math.floor(e.y/T)]},
+ reset(reason){resetToCheckpoint(reason)},save(){saveGame()},
+ scene(id,done){Scenes.play(id,done)},
+ setCheckpoint(tx,ty){R.checkpoint=tc(tx,ty)},
+};
+
+/* Shared six-room skeleton (the canonical map). Floors modify it afterwards. */
+function skeleton(){
+ for(let y=3;y<=26;y++)for(let x=18;x<=22;x++)B.floor(x,y,'c');
+ B.floor(20,2,'lift');B.floor(20,27,'lift');
+ for(const [name,a] of Object.entries(ROOMS)){
+  for(let y=a[2];y<=a[3];y++)for(let x=a[0];x<=a[1];x++)B.floor(x,y,'r');
+  const west=name[0]==='W';
+  for(let x=Math.min(a[4],west?17:23);x<=Math.max(a[4],west?17:23);x++)B.floor(x,a[5],'c');
+  B.floor(west?14:25,a[5],'c');
+  B.door({id:name,x:a[4],y:a[5],label:'Door',open:true,persist:false});
+ }
+}
+function roomCenter(n){const a=ROOMS[n];return [Math.floor((a[0]+a[1])/2),Math.floor((a[2]+a[3])/2)]}
+
+function buildFloor(){
+ R=makeRuntime();
+ const def=FLOOR[G.floor][G.phase];R.def=def;
+ R.entry=G.phase==='e'?[20,27]:[20,2];R.exit=G.phase==='e'?[20,2]:[20,27];
+ if(!def.bespoke)skeleton();
+ def.build(B);
+ const sp=def.spawn?def.spawn(B):(R.arriveStairs?R.arriveStairs:R.entry);
+ const c=tc(sp[0],sp[1]);R.player={x:c.x,y:c.y,facing:-Math.PI/2,stance:'walk',moving:false,anim:0};
+ if(!R.checkpoint)R.checkpoint={x:c.x,y:c.y};
+ ui.floorHeader();ui.objectives();R.dirty=true;
+ Audio13.ambientOn(G.phase==='e'?'escape':'return');
+ if(def.onEnter)def.onEnter(B);
+}
+
+/* ---------- Collision ---------- */
+function solidAt(px,py,ignore){
+ const tx=Math.floor(px/T),ty=Math.floor(py/T);
+ if(tx<0||ty<0||tx>=W||ty>=H||R.grid[ty][tx])return true;
+ for(const d of R.doors)if(!d.open&&d.x===tx&&d.y===ty&&d!==ignore)return true;
+ for(const p of R.props)if(p.solid&&p!==ignore&&tx>=p.x&&tx<p.x+p.w&&ty>=p.y&&ty<p.y+p.h)return true;
+ for(const it of R.items)if(it.solid&&it!==ignore&&it.visible()&&tx>=it.x&&tx<it.x+it.w&&ty>=it.y&&ty<it.y+it.h)return true;
+ return false;
+}
+function canStand(x,y,r=10,ignore){return !solidAt(x-r,y-r,ignore)&&!solidAt(x+r,y-r,ignore)&&!solidAt(x-r,y+r,ignore)&&!solidAt(x+r,y+r,ignore)}
+function tileBlocked(tx,ty,forGuard){
+ if(tx<0||ty<0||tx>=W||ty>=H||R.grid[ty][tx])return true;
+ for(const d of R.doors)if(!d.open&&d.x===tx&&d.y===ty){if(forGuard&&!d.locked&&!d.noRobot)continue;return true}
+ for(const p of R.props)if(p.solid&&tx>=p.x&&tx<p.x+p.w&&ty>=p.y&&ty<p.y+p.h)return true;
+ for(const it of R.items)if(it.solid&&it.visible()&&tx>=it.x&&tx<it.x+it.w&&ty>=it.y&&ty<it.y+it.h)return true;
+ return false;
+}
+function clearPath(a,b,ignore,short=0){
+ const d=dist(a,b);for(let t=4;t<d-short;t+=4){const x=a.x+(b.x-a.x)*t/d,y=a.y+(b.y-a.y)*t/d;if(solidAt(x,y,ignore))return false}return true;
+}
+function losTiles(a,b){ // walls and closed doors block sight; props and items do not
+ const d=dist(a,b);for(let t=6;t<d;t+=6){const x=a.x+(b.x-a.x)*t/d,y=a.y+(b.y-a.y)*t/d;const tx=Math.floor(x/T),ty=Math.floor(y/T);
+  if(tx<0||ty<0||tx>=W||ty>=H||R.grid[ty][tx])return false;
+  for(const dr of R.doors)if(!dr.open&&dr.x===tx&&dr.y===ty&&dr.kind!=='glass')return false;}
+ return true;
+}
+function hazardAt(x,y){for(const h of R.hazards)if(h.set.has(key(x,y))&&(h.activeTile?h.activeTile(B,x,y):h.active(B)))return true;return false}
+function findPath(sx,sy,tx,ty,forGuard=true,avoid=false){
+ if(sx===tx&&sy===ty)return [];
+ const prev=new Map();const q=[[sx,sy]];prev.set(key(sx,sy),null);
+ for(let i=0;i<q.length;i++){const [x,y]=q[i];if(x===tx&&y===ty)break;
+  for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,ny=y+dy,k=key(nx,ny);if(prev.has(k)||tileBlocked(nx,ny,forGuard)||(avoid&&hazardAt(nx,ny)))continue;prev.set(k,[x,y]);q.push([nx,ny])}}
+ if(!prev.has(key(tx,ty)))return null;
+ const out=[];let cur=[tx,ty];while(cur){out.unshift(cur);cur=prev.get(key(cur[0],cur[1]))}out.shift();return out;
+}
+function moveEntity(e,tx,ty,speed,dt,forGuard=true){ // move along path to tile; returns true when arrived
+ const [ex,ey]=B.tileOf(e);
+ if(!e.path||e.pathT<=0||e.pathGoal!==key(tx,ty)){e.path=findPath(ex,ey,tx,ty,forGuard);e.pathGoal=key(tx,ty);e.pathT=.5;if(!e.path)return false}
+ e.pathT-=dt;
+ let target=e.path.length?tc(e.path[0][0],e.path[0][1]):tc(tx,ty);
+ const d=dist(e,target);
+ if(d<3){if(e.path.length){e.path.shift();return e.path.length===0&&dist(e,tc(tx,ty))<4}return true}
+ const s=Math.min(d,speed*dt);e.angle=Math.atan2(target.y-e.y,target.x-e.x);
+ const nx=e.x+Math.cos(e.angle)*s,ny=e.y+Math.sin(e.angle)*s;
+ const [ntx,nty]=[Math.floor(nx/T),Math.floor(ny/T)];
+ for(const dr of R.doors)if(!dr.open&&dr.x===ntx&&dr.y===nty&&forGuard&&!dr.locked&&!dr.noRobot){dr.open=true;dr.timer=dr.auto||2.5;dr.robotOpened=true;R.dirty=true;SFX.door()}
+ e.x=nx;e.y=ny;return false;
+}
+
+/* ---------- Stealth ---------- */
+function playerHidden(g){const [tx,ty]=B.tileOf(R.player);return R.hides.has(key(tx,ty))&&dist(g,R.player)>48}
+function canSee(g){
+ const p=R.player,d=dist(g,p);if(d>g.vision)return false;
+ const a=Math.atan2(p.y-g.y,p.x-g.x),delta=Math.atan2(Math.sin(a-g.angle),Math.cos(a-g.angle));
+ if(Math.abs(delta)>g.fov/2&&d>26)return false;
+ if(playerHidden(g))return false;
+ return losTiles(g,p);
+}
+function noiseRadius(){const p=R.player;if(!p.moving)return 0;return p.stance==='run'?128:p.stance==='walk'?48:16}
+function canHear(g){const n=noiseRadius();if(!n)return false;const d=dist(g,R.player);if(d>n)return false;return losTiles(g,R.player)||d<n*.5}
+function stepGuard(g,dt){
+ if(!g.active)return;
+ if(g.disabled>0){g.disabled-=dt;if(g.disabled<=0){g.mode='patrol';g.path=null}return}
+ if(g.mode==='script'||g.mode==='idle'){if(g.script)g.script(g,dt);return}
+ const p=R.player;
+ const seen=canSee(g),heard=!seen&&canHear(g);
+ if(seen){if(g.mode!=='pursue'){g.mode='pursue';g.path=null;if(!R.seenT)SFX.alarm();R.seenT=1.2}g.lastSeen={x:p.x,y:p.y};g.lostT=2.5;R.alert=Math.min(100,R.alert+dt*90)}
+ else if(heard&&g.mode!=='pursue'){g.mode='investigate';g.noise={x:p.x,y:p.y};g.lookT=2;g.path=null;R.alert=Math.min(100,R.alert+dt*20)}
+ if(g.mode==='pursue'){
+  if(!seen){g.lostT-=dt;if(g.lostT<=0){g.mode='investigate';g.noise=g.lastSeen;g.lookT=2.5;g.path=null}}
+  const tgt=seen?p:g.lastSeen;const [tx,ty]=[Math.floor(tgt.x/T),Math.floor(tgt.y/T)];
+  moveEntity(g,tx,ty,g.pursueSpeed||105,dt);
+  if(dist(g,p)<22&&seen)startCapture(g);
+ }else if(g.mode==='investigate'){
+  const [tx,ty]=[Math.floor(g.noise.x/T),Math.floor(g.noise.y/T)];
+  const arrived=moveEntity(g,tx,ty,g.speed*1.3,dt);
+  if(arrived||g.path===null){g.lookT-=dt;g.angle+=dt*1.5;if(g.lookT<=0){g.mode='patrol';g.path=null}}
+ }else{ // patrol
+  if(g.route.length){const wp=g.route[g.wp%g.route.length];if(moveEntity(g,wp[0],wp[1],g.speed,dt)){g.wp=(g.wp+1)%g.route.length;g.path=null}}
+  else{const d=dist(g,g.home);if(d>4)moveEntity(g,Math.floor(g.home.x/T),Math.floor(g.home.y/T),g.speed,dt);else{g.angle=g.home.angle+Math.sin(R.t*.7)*.6}}
+ }
+}
+function stepSubject(s,dt){
+ if(!s.active)return;const p=R.player;
+ if(s.mode==='held')return;
+ if(s.mode==='lured'){if(moveEntity(s,s.target[0],s.target[1],s.speed*1.3,dt,false)){s.mode='linger';s.linger=s.lingerFor||4}}
+ else if(s.mode==='linger'){s.linger-=dt;s.angle+=dt*2;if(s.linger<=0){s.mode='roam';s.wait=0;s.target=null;if(s.onLeave)s.onLeave(s)}}
+ else{ // roam within area
+  if(!s.target||s.wait>0){s.wait-=dt;if(s.wait<=0||!s.target){const [x0,y0,x1,y1]=s.area;let tries=0;do{s.target=[x0+Math.floor(rand()*(x1-x0+1)),y0+Math.floor(rand()*(y1-y0+1))];tries++}while(tileBlocked(s.target[0],s.target[1],false)&&tries<20);s.path=null;s.wait=0}}
+  else if(moveEntity(s,s.target[0],s.target[1],s.speed,dt,false)){s.wait=1+rand()*2;}
+  else if(s.path===null){s.target=null}
+  // notice player: subjects chase when close with line of sight
+  const d=dist(s,p);if(d<120&&losTiles(s,p)&&!playerHidden(s)){s.chase=1.5}
+  if(s.chase>0){s.chase-=dt;const [tx,ty]=B.tileOf(p);moveEntity(s,tx,ty,s.speed*1.4,dt,false);R.alert=Math.min(100,R.alert+dt*60)}
+ }
+ if(dist(s,p)<20&&s.mode!=='held')startCapture(s,'ESCAPED SUBJECT');
+}
+function startCapture(by,title){
+ if(R.capture||modal!=='none'||R.grace>0)return;
+ R.capture={by,title:title||'SECURITY RESTRAINT',t:0,limit:3,attempted:false,result:null,resultT:0};modal='capture';SFX.capture();keys.clear();
+ ui.say(title?'The subject has you. One chance: press SPACE when the marker crosses the center.':'Restrained by security. One chance: press SPACE when the marker crosses the center.');
+}
+function captureAttempt(){
+ const c=R.capture;if(!c||c.attempted)return;c.attempted=true;
+ const m=markerPos(c.t);
+ if(Math.abs(m-.5)<.09){c.result='ok';c.resultT=.8;SFX.escape()}else{c.result='fail';c.resultT=1;SFX.deny()}
+}
+function markerPos(t){return .5+.5*Math.sin(t*4.2)}
+function stepCapture(dt){
+ const c=R.capture;c.t+=dt;
+ if(c.result){c.resultT-=dt;if(c.resultT<=0){
+  if(c.result==='ok'){ // break contact: brief grace, raise alert, keep progress
+   const by=c.by;by.disabled=3.5;by.mode='patrol';by.path=null;if(by.kind==='subject'){by.mode='roam';by.wait=3;by.chase=0;by.stun=3.5}
+   R.alert=100;R.grace=2;const dx=R.player.x-by.x,dy=R.player.y-by.y,l=Math.hypot(dx,dy)||1;
+   for(let i=0;i<6;i++){const nx=R.player.x+dx/l*6,ny=R.player.y+dy/l*6;if(canStand(nx,ny)){R.player.x=nx;R.player.y=ny}}
+   R.capture=null;modal='none';ui.say('You twist free. The alarm is raised, but your progress is intact.');
+  }else{R.capture=null;modal='none';resetToCheckpoint('Captured. Security returned you to the last checkpoint. Progress on completed objectives is retained.')}
+ }return}
+ if(c.t>=c.limit){c.result='fail';c.resultT=.6;ui.say('Too slow.')}
+}
+function resetToCheckpoint(msg){
+ const cp=R.def.checkpoint?R.def.checkpoint(B):R.checkpoint;
+ R.player.x=cp.x;R.player.y=cp.y;R.player.moving=false;
+ R.capture=null;if(modal==='capture')modal='none';R.alert=0;R.grace=1.5;R.hold=null;R.holdT=0;keys.clear();
+ for(const g of R.guards){g.x=g.home.x;g.y=g.home.y;g.angle=g.home.angle;g.mode=g.homeMode||'patrol';g.path=null;g.disabled=0;g.wp=0}
+ for(const s of R.subjects){s.x=s.home.x;s.y=s.home.y;s.mode='roam';s.target=null;s.chase=0;s.path=null}
+ for(const d of R.doors)if(d.auto||d.robotOpened){d.open=false;d.timer=0;d.robotOpened=false}
+ R.timers={};R.rt={};R.resets++;if(R.def.onReset)R.def.onReset(B);
+ R.dirty=true;ui.say(msg||'Reset to checkpoint. Progress retained.');ui.objectives();
+}
+
+/* ---------- Interaction ---------- */
+function nearestInteractable(){
+ const p=R.player;let best=null,bd=1e9;
+ const score=(c,d)=>{const a=Math.atan2(c.y-p.y,c.x-p.x);const dl=Math.atan2(Math.sin(a-p.facing),Math.cos(a-p.facing));return d-26*Math.cos(dl)}; // prefer what the player faces
+ const [ptx,pty]=B.tileOf(p);
+ for(const it of R.items){if(!it.visible())continue;const c={x:it.px,y:it.py};const d=dist(p,c);const reach=it.reach+(it.solid?(Math.max(it.w,it.h)-1)*16:0);if(d>=reach)continue;const sc=score(c,d);if(sc>=bd)continue;
+  if(it.w===1&&it.h===1&&R.grid[it.y][it.x]===1){ // wall-mounted: must stand on the approach tile, never through the wall
+   const sides={n:[0,-1],s:[0,1],e:[1,0],w:[-1,0]};let ok=false;
+   if(it.side){const [ox,oy]=sides[it.side];ok=ptx===it.x+ox&&pty===it.y+oy}
+   else ok=Math.abs(ptx-it.x)+Math.abs(pty-it.y)===1&&!R.grid[pty][ptx];
+   if(ok){best={type:'item',o:it};bd=sc}continue}
+  if(clearPath(p,c,it,15)){best={type:'item',o:it};bd=sc}}
+ for(const d of R.doors){const c=tc(d.x,d.y);const dd=dist(p,c);if(dd>=46)continue;if(Math.abs(ptx-d.x)+Math.abs(pty-d.y)>1)continue; // doors: orthogonally adjacent only, never across a wall corner
+  const sc=score(c,dd);if(sc<bd&&clearPath(p,c,d)){best={type:'door',o:d};bd=sc}}
+ const ex=tc(R.exit[0],R.exit[1]);if(!R.def.noExitTile&&dist(p,ex)<40){best={type:'exit'};}
+ return best;
+}
+function promptFor(n){
+ if(!n)return null;
+ if(n.type==='exit')return G.phase==='e'?'E: Call the upper lift':'E: Call the lower lift';
+ if(n.type==='door'){const d=n.o;if(d.prompt)return typeof d.prompt==='function'?d.prompt(B,d):d.prompt;return d.open?(d.closable?'E: Close '+d.label:null):'E: '+(d.locked?'Try ':'Open ')+d.label}
+ const it=n.o;const pr=typeof it.prompt==='function'?it.prompt(B,it):it.prompt;return pr===null?null:'E: '+(pr||it.label);
+}
+function interact(){
+ const n=nearestInteractable();R.prompt=n;
+ if(!n){ui.say('Nothing to use here. Move closer to a console, door or lift.');return}
+ if(n.type==='exit'){useExit();return}
+ if(n.type==='door'){const d=n.o;
+  if(d.use){d.use(B,d);return}
+  if(d.open){if(d.closable){d.open=false;d.timer=0;R.dirty=true;SFX.door();ui.say(d.label+' closed.')}return}
+  const lock=typeof d.locked==='function'?d.locked(B,d):d.locked;
+  if(lock){ui.say(typeof lock==='string'?lock:d.label+' is locked.');SFX.doorDeny();if(d.onDeny)d.onDeny(B,d);return}
+  B.openDoor(d.id);ui.say(d.label+' opens.');if(d.onOpen)d.onOpen(B,d);return;
+ }
+ const it=n.o;if(it.hold){R.hold=it;R.holdT=0;if(it.holdStart)it.holdStart(B,it);return}
+ it.use(B,it);
+}
+function useExit(){
+ const def=R.def;const ready=def.exitReady(FS());
+ if(!ready){const m=typeof def.exitMsg==='function'?def.exitMsg(FS()):def.exitMsg;ui.say(m||'The lift does not respond. Something still has to be done on this floor.');SFX.deny();return}
+ transition();
+}
+function transition(){
+ if(G.floor===1&&G.phase==='e'){Scenes.play('daylight');return}
+ if(G.floor===13&&G.phase==='r'){Scenes.play('reunion');return}
+ SFX.lift();const next=G.phase==='e'?G.floor-1:G.floor+1;
+ fade(()=>{G.floor=next;G.stage='';buildFloor();saveGame();ui.say((G.phase==='e'?'Ascending. ':'Descending. ')+'Floor '+G.floor+' · '+NAMES[G.floor]+'.')});
+}
+function transitionStairs(next,arrive){
+ fade(()=>{G.floor=next;G.stage='';const prevR=R;buildFloor();if(arrive){const c=tc(arrive[0],arrive[1]);R.player.x=c.x;R.player.y=c.y;R.checkpoint={x:c.x,y:c.y}}saveGame();ui.say('Stairwell. Floor '+G.floor+' · '+NAMES[G.floor]+'.')});
+}
+function fade(fn){R.flash=1;R.fadeFn=fn}
+
+/* ---------- Simulation step ---------- */
+function step(dt){
+ if(modal==='capture'){stepCapture(dt);return}
+ if(modal!=='none')return;
+ R.t+=dt;if(R.grace>0)R.grace-=dt;if(R.seenT>0)R.seenT-=dt;
+ const p=R.player;
+ let dx=(keys.has('d')||keys.has('arrowright')?1:0)-(keys.has('a')||keys.has('arrowleft')?1:0);
+ let dy=(keys.has('s')||keys.has('arrowdown')?1:0)-(keys.has('w')||keys.has('arrowup')?1:0);
+ p.stance=keys.has('control')?'crouch':keys.has('shift')?'run':'walk';
+ p.moving=!!(dx||dy);
+ if(p.moving&&!R.hold){const l=Math.hypot(dx,dy);dx/=l;dy/=l;p.facing=Math.atan2(dy,dx);
+  const sp={walk:90,run:150,crouch:45}[p.stance],mv=sp*dt;
+  if(canStand(p.x+dx*mv,p.y))p.x+=dx*mv;else if(canStand(p.x+Math.sign(dx)*mv,p.y)&&dx)p.x+=Math.sign(dx)*mv;
+  if(canStand(p.x,p.y+dy*mv))p.y+=dy*mv;else if(canStand(p.x,p.y+Math.sign(dy)*mv)&&dy)p.y+=Math.sign(dy)*mv;
+  p.anim+=dt*(p.stance==='run'?14:8);R.footT-=dt;if(R.footT<=0){SFX.step(p.stance);R.footT=p.stance==='run'?.25:.45}
+ }else p.moving=false;
+ // hold interactions (E held on an item)
+ if(R.hold){const it=R.hold;if(!keys.has('e')||dist(p,{x:it.px,y:it.py})>it.reach+16){if(it.release)it.release(B,it,R.holdT);R.hold=null;R.holdT=0}else{R.holdT+=dt;it.hold(B,it,dt,R.holdT)}}
+ // edge-triggered actions
+ if(pressed.has('e')){pressed.delete('e');interact()}
+ if(pressed.has('r')){pressed.delete('r');resetToCheckpoint('Manual reset to checkpoint. Completed objectives are retained.')}
+ pressed.clear();
+ // timers
+ for(const k in R.timers){if(R.timers[k]>0){R.timers[k]-=dt;if(R.timers[k]<=0){R.timers[k]=0;if(R.def.onExpire)R.def.onExpire(B,k)}}}
+ for(const d of R.doors)if(d.timer>0){d.timer-=dt;if(d.timer<=0){d.timer=0;d.open=false;d.robotOpened=false;R.dirty=true;SFX.door();if(d.onClose)d.onClose(B,d)}}
+ if(R.def.tick)R.def.tick(dt,B);
+ for(const g of R.guards)stepGuard(g,dt);
+ for(const s of R.subjects)stepSubject(s,dt);
+ // hazards
+ const [ptx,pty]=B.tileOf(p);
+ for(const h of R.hazards)if(h.set.has(key(ptx,pty))&&(h.activeTile?h.activeTile(B,ptx,pty):h.active(B))){if(h.kind==='push'){const nx=p.x+(h.dx||0)*dt*60,ny=p.y+(h.dy||0)*dt*60;if(canStand(nx,ny)){p.x=nx;p.y=ny}}else{SFX.shock();R.shake=.4;resetToCheckpoint(h.msg);return}}
+ // alert bookkeeping
+ R.alert=Math.max(0,R.alert-dt*3);
+ R.alertState=R.guards.some(g=>g.active&&g.mode==='pursue')||R.subjects.some(s=>s.chase>0)?'SEEN':R.guards.some(g=>g.active&&g.mode==='investigate')?'SUSPICIOUS':'HIDDEN';
+ R.prompt=nearestInteractable();
+ for(const f of R.fx)f.t+=dt;R.fx=R.fx.filter(f=>f.t<f.dur);
+ if(R.shake>0)R.shake-=dt;if(R.lightsUp>0)R.lightsUp-=dt;
+ if(R.flash>0){R.flash-=dt*2;if(R.flash<=0&&R.fadeFn){const f=R.fadeFn;R.fadeFn=null;f()}}
+}
+
+/* --- 15_ui.js --- */
+/* ============================================================
+   UI · DOM panel, dialogs, puzzle overlays, scene framework, renderer
+   ============================================================ */
+const canvas=$('#game'),ctx=canvas.getContext('2d'),overlay=$('#overlay'),dialogEl=$('#dialog'),captionEl=$('#caption');
+ctx.imageSmoothingEnabled=false;
+let dialogButtons=[],dialogOnClose=null,prevModal='none';
+const ui={
+ say(t){$('#message').textContent=t;R&&(R.msgT=6)},
+ announce(t){ui.say('AI: “'+t+'”');SFX.voice();if(OPT.captions)ui.caption('[AI announcement] '+t,3.2)},
+ caption(t,sec=2.5){captionEl.textContent=t;captionEl.classList.remove('hidden');clearTimeout(ui._ct);ui._ct=setTimeout(()=>captionEl.classList.add('hidden'),sec*1000)},
+ floorHeader(){$('#level').textContent='FLOOR '+G.floor+' · '+NAMES[G.floor];$('#phase').textContent=G.phase==='e'?'ASCENT · ESCAPE':'DESCENT · RETURN'},
+ objectives(){
+  if(!G||!R||!R.def){$('#objectives').innerHTML='';return}
+  const fs=FS(),list=R.def.objectives;let cur=true;
+  let html='';for(const o of list){const done=o.done(fs);const label=typeof o.label==='function'?o.label(fs):o.label;const cls=done?'done':cur?'cur':'todo';html+=`<div class="obj ${cls}">${done?'✓':cls==='cur'?'◆':'○'} ${label}</div>`;if(!done)cur=false}
+  const ex=R.def.exitLabel||(G.floor===1&&G.phase==='e'?'Walk out through the exterior gate':G.phase==='e'?'Take the upper lift':'Take the lower lift');
+  html+=`<div class="obj ${R.def.exitReady(fs)?'cur':'todo'}">${R.def.exitReady(fs)?'◆':'○'} ${ex}</div>`;
+  $('#objectives').innerHTML=html;ui.journal();
+ },
+ journal(){$('#journal').innerHTML=G&&G.memories.length?[...G.memories].sort((a,b)=>b-a).map(f=>`<p><b>F${f}</b> · ${MEMORIES[f]}</p>`).join(''):'No fragments recovered.'},
+ dialog(title,paras,buttons,o={}){
+  prevModal=modal==='dialog'?prevModal:modal;modal='dialog';overlay.classList.remove('hidden');dialogEl.replaceChildren();dialogButtons=[];dialogOnClose=o.onClose||null;
+  const h=document.createElement('h2');h.textContent=title;if(o.small)h.className='small';dialogEl.append(h);
+  for(const p of paras){const el=document.createElement('p');if(typeof p==='object'){el.className=p.cls;el.textContent=p.text}else el.textContent=p;dialogEl.append(el)}
+  if(o.custom)dialogEl.append(o.custom);
+  const row=document.createElement('div');row.className='row';
+  for(const [label,fn,primary] of buttons){const b=document.createElement('button');b.type='button';b.textContent=label;if(primary)b.className='primary';b.onclick=()=>{if(!o.stay)ui.closeDialog();fn&&fn()};row.append(b);dialogButtons.push(b)}
+  dialogEl.append(row);keys.clear();setTimeout(()=>dialogButtons[0]&&dialogButtons[0].focus(),0);
+ },
+ closeDialog(){overlay.classList.add('hidden');modal=prevModal==='dialog'?'none':prevModal;prevModal='none';const f=dialogOnClose;dialogOnClose=null;if(f)f();$('#screen').focus({preventScroll:true})},
+ alertMeter(){$('#alert').style.width=(R?R.alert:0)+'%';$('#alertState').textContent=R?R.alertState:'—';$('#stance').textContent=R?R.player.stance.toUpperCase():'—'},
+};
+/* keyboard navigation of dialog buttons */
+function dialogKey(e){
+ const k=e.key;if(!dialogButtons.length)return;
+ const i=dialogButtons.indexOf(document.activeElement);
+ if(k==='ArrowRight'||k==='ArrowDown'||k==='Tab'&&!e.shiftKey){e.preventDefault();dialogButtons[(i+1+dialogButtons.length)%dialogButtons.length].focus()}
+ else if(k==='ArrowLeft'||k==='ArrowUp'||k==='Tab'&&e.shiftKey){e.preventDefault();dialogButtons[(i-1+dialogButtons.length)%dialogButtons.length].focus()}
+ else if(k==='Enter'||k===' '){e.preventDefault();(i>=0?dialogButtons[i]:dialogButtons[0]).click()}
+ else if(k==='Escape'&&dialogOnEscape){e.preventDefault();const f=dialogOnEscape;dialogOnEscape=null;f()}
+}
+let dialogOnEscape=null;
+
+/* ---------- Menus ---------- */
+function titleScreen(){
+ modal='title';const saved=loadGame();const paras=['An amnesiac wakes thirteen floors underground. Someone nearby already knows who they are.',{cls:'fine',text:'Keyboard game · WASD/arrows, Shift, Ctrl, E, Space, J, Esc'}];
+ if(storageNote)paras.push({cls:'warn',text:storageNote});
+ const btns=[];
+ if(saved)btns.push([saved.finished?'Resume (finished)':'Continue',()=>{G=saved;if(G.finished){if(G.ending==='leave')Scenes.play('escapeComplete');else Scenes.play('reunion')}else{startRuntime()}},true]);
+ btns.push(['New game',()=>chooseProtagonist()]);btns.push(['Options',()=>optionsMenu(titleScreen)]);btns.push(['Controls',()=>controlsDialog(titleScreen)]);
+ ui.dialog('13',paras,btns,{onClose:()=>{}});modal='title';prevModal='title';
+}
+function chooseProtagonist(){
+ ui.dialog('SUBJECT 13',['Who wakes on the table?',{cls:'fine',text:'The injured captive is the opposite sex. The relationship is never named.'}],[['Female protagonist',()=>beginNew('female'),true],['Male protagonist',()=>beginNew('male')],['Back',()=>titleScreen()]]);prevModal='title';
+}
+function beginNew(gender){try{localStorage.removeItem(SAVE_KEY)}catch(e){}G=newGame(gender);modal='none';Audio13.resume();Scenes.play('awakening')}
+function startRuntime(){modal='none';Audio13.resume();buildFloor();ui.say('Game restored. Transient security has been rebuilt from a safe state.')}
+function optionsMenu(back){
+ const wrap=document.createElement('div');
+ const mk=(label,get,set)=>{const row=document.createElement('div');row.className='opt';const s=document.createElement('span');s.textContent=label;const b=document.createElement('button');b.type='button';b.textContent=get()?'On':'Off';b.onclick=()=>{set(!get());b.textContent=get()?'On':'Off';saveOpts()};row.append(s,b);wrap.append(row);return b};
+ const b1=mk('Sound captions',()=>OPT.captions,v=>OPT.captions=v),b2=mk('Mute audio',()=>OPT.mute,v=>OPT.mute=v),b3=mk('Reduced motion',()=>OPT.reduced,v=>OPT.reduced=v);
+ ui.dialog('OPTIONS',[],[['Back',back]],{custom:wrap,small:true});dialogButtons.unshift(b1,b2,b3);prevModal=back===titleScreen?'title':prevModal;
+}
+function controlsDialog(back){ui.dialog('CONTROLS',['WASD or arrows: move. Shift: run (loud). Ctrl: crouch (quiet, slow).','E: interact. Hold E to keep touching something. Space: one timed attempt to break a capture.','J: memory journal. Esc: pause. R: reset to the last checkpoint (objectives are kept).','In pattern locks: arrows move, E or Space toggles a contact, Enter submits, Esc cancels.'],[['Back',back]],{small:true});if(back===titleScreen)prevModal='title'}
+function pauseMenu(){
+ if(modal!=='none')return;
+ ui.dialog('PAUSED',['The facility is still waiting.'],[['Resume',null,true],['Save',()=>{saveGame()&&ui.say('Saved.')}],['Journal',()=>journalDialog(pauseMenu)],['Options',()=>optionsMenu(pauseMenu)],['Controls',()=>controlsDialog(pauseMenu)],['New game',()=>ui.dialog('START OVER?',['This erases the current save.'],[['Erase and start over',()=>{try{localStorage.removeItem(SAVE_KEY)}catch(e){}G=null;R=null;titleScreen()}],['Cancel',pauseMenu]])]]);
+ dialogOnEscape=()=>ui.closeDialog();
+}
+function journalDialog(back){
+ const paras=G.memories.length?[...G.memories].sort((a,b)=>b-a).map(f=>'Floor '+f+': '+MEMORIES[f]):['No memories recovered. The journal does not gate anything; it only deepens what you see.'];
+ ui.dialog('MEMORY JOURNAL',paras,[['Close',back===pauseMenu?pauseMenu:null]],{small:true});dialogOnEscape=()=>ui.closeDialog();
+}
+
+/* ---------- Puzzle overlays (canvas, keyboard) ---------- */
+let puzzle=null;
+function openGrid(o){ // o:{title,hint,size,onSubmit(mask),onCancel}
+ puzzle={kind:'grid',size:o.size||4,cur:0,mask:0,title:o.title||'PATTERN LOCK',hint:o.hint||'',onSubmit:o.onSubmit,onCancel:o.onCancel,flash:0,msg:''};modal='grid';keys.clear();
+}
+function openKeypad(o){puzzle={kind:'keypad',digits:'',len:o.len||4,title:o.title||'KEYPAD',hint:o.hint||'',onSubmit:o.onSubmit,onCancel:o.onCancel,msg:''};modal='keypad';keys.clear()}
+function openSequence(o){const seq=[];for(let i=0;i<(o.len||4);i++)seq.push(Math.floor(rand()*4));puzzle={kind:'sequence',seq,input:[],phase:'show',t:0,title:o.title||'COGNITIVE STATION',onDone:o.onDone,msg:''};modal='sequence';keys.clear()}
+function closePuzzle(){puzzle=null;modal='none';keys.clear()}
+function puzzleKey(e){
+ const k=e.key.toLowerCase(),p=puzzle;if(!p)return;e.preventDefault();
+ if(p.kind==='grid'){const n=p.size;
+  if(k==='arrowright'||k==='d')p.cur=(p.cur%n===n-1)?p.cur-(n-1):p.cur+1;
+  else if(k==='arrowleft'||k==='a')p.cur=(p.cur%n===0)?p.cur+(n-1):p.cur-1;
+  else if(k==='arrowdown'||k==='s')p.cur=(p.cur+n)%(n*n);
+  else if(k==='arrowup'||k==='w')p.cur=(p.cur-n+n*n)%(n*n);
+  else if(k==='e'||k===' '){p.mask^=(1<<p.cur);SFX.beep()}
+  else if(k==='enter'){if(!p.mask){p.msg='Select at least one contact.';return}const r=p.onSubmit(p.mask);if(r&&r.close)closePuzzle();else if(r&&r.msg){p.msg=r.msg;p.mask=0}}
+  else if(k==='escape'){const f=p.onCancel;closePuzzle();f&&f()}
+ }else if(p.kind==='keypad'){
+  if(/^[0-9]$/.test(k)&&p.digits.length<p.len){p.digits+=k;SFX.beep()}
+  else if(k==='backspace')p.digits=p.digits.slice(0,-1);
+  else if(k==='enter'){if(p.digits.length<p.len){p.msg='Enter '+p.len+' digits.';return}const r=p.onSubmit(p.digits);if(r&&r.close)closePuzzle();else{p.msg=(r&&r.msg)||'Rejected.';p.digits=''}}
+  else if(k==='escape'){const f=p.onCancel;closePuzzle();f&&f()}
+ }else if(p.kind==='sequence'){
+  if(k==='escape'){closePuzzle();return}
+  if(p.phase!=='input')return;
+  const map={arrowup:0,w:0,arrowright:1,d:1,arrowdown:2,s:2,arrowleft:3,a:3,'1':0,'2':1,'3':2,'4':3};
+  if(map[k]===undefined)return;p.input.push(map[k]);SFX.beep();
+  const i=p.input.length-1;
+  if(p.input[i]!==p.seq[i]){p.msg='Sequence mismatch. A fresh sequence is generated.';p.phase='fail';p.t=0;SFX.deny();return}
+  if(p.input.length===p.seq.length){p.phase='ok';p.t=0;SFX.confirm()}
+ }
+}
+function stepPuzzle(dt){const p=puzzle;if(!p||p.kind!=='sequence')return;p.t+=dt;
+ if(p.phase==='show'&&p.t>p.seq.length*.8+1){p.phase='input';p.t=0}
+ else if(p.phase==='fail'&&p.t>1.4){p.seq=p.seq.map(()=>Math.floor(rand()*4));p.input=[];p.phase='show';p.t=0;p.msg=''}
+ else if(p.phase==='ok'&&p.t>.8){const f=p.onDone;closePuzzle();f(true)}
+}
+
+/* ---------- Scenes ---------- */
+const Scenes={defs:{},cur:null,
+ play(id,done){const d=Scenes.defs[id];if(!d)return;Scenes.cur={id,def:d,i:0,t:0,done,total:0};modal='scene';keys.clear();captionEl.classList.add('hidden');Scenes.enter()},
+ enter(){const s=Scenes.cur,st=s.def.steps[s.i];s.t=0;if(st.sfx)try{st.sfx()}catch(e){}if(st.cap&&OPT.captions)ui.caption(st.cap,st.dur||3);if(st.on)st.on()},
+ step(dt){const s=Scenes.cur;if(!s)return;s.t+=dt;s.total+=dt;const st=s.def.steps[s.i];if(st.dur&&s.t>=st.dur&&!st.hold)Scenes.next()},
+ next(){const s=Scenes.cur;if(!s)return;s.i++;if(s.i>=s.def.steps.length){Scenes.finish()}else Scenes.enter()},
+ skip(){const s=Scenes.cur;if(!s||s.def.noSkip)return;Scenes.finish()},
+ finish(){const s=Scenes.cur;Scenes.cur=null;modal='none';captionEl.classList.add('hidden');keys.clear();if(s.def.end)s.def.end();if(s.done)s.done()},
+ key(e){const k=e.key.toLowerCase();const s=Scenes.cur;if(!s)return;const st=s.def.steps[s.i];
+  if(k==='escape'){e.preventDefault();if(st.choice)return;Scenes.skip()}
+  else if(k==='enter'||k===' '||k==='e'){e.preventDefault();if(st.choice)return;if(s.t>.25)Scenes.next()}}
+};
+
+/* ---------- Rendering ---------- */
+const PAL={13:['#2a3540','#3b4a58','#2d3a44','#334350','#c8553d'],12:['#2b3748','#3e4c62','#2f3b4b','#374555','#d8a24a'],11:['#2f3d3f','#43575a','#324446','#3a4e50','#7fd0c6'],10:['#30334a','#454a68','#33374f','#3b405a','#9b7fd6'],9:['#3a3030','#524343','#3f3535','#473c3c','#d4594f'],8:['#3c3a2c','#55523f','#403d30','#484536','#e3b14b'],7:['#2d3440','#3f4a5a','#303946','#384250','#5b8fd6'],6:['#3a3528','#524b3b','#3f3a2d','#474234','#c9a66b'],5:['#2c3a3c','#405557','#304042','#374a4c','#62c4b2'],4:['#38332c','#4f4a40','#3c3730','#433e36','#d87a4a'],3:['#333a2d','#4a533f','#383f32','#3f473a','#b7c94b'],2:['#3a3444','#524a5e','#3e3848','#463f52','#c78bd0'],1:['#2f3a44','#44525e','#333f4a','#3b4752','#9ad2f0']};
+function makeStatic(){
+ const c=document.createElement('canvas');c.width=W*T;c.height=H*T;const g=c.getContext('2d');g.imageSmoothingEnabled=false;
+ const pal=PAL[G.floor],ret=G.phase==='r';const dark=ret?.78:1;
+ const sh=(hex,m)=>{const n=parseInt(hex.slice(1),16);const r=((n>>16)&255)*m|0,gg=((n>>8)&255)*m|0,b=(n&255)*m|0;return `rgb(${r},${gg},${b})`};
+ const rs=rng(G.floor*31+(ret?7:1));
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+  const k=R.kind[y][x],wall=R.grid[y][x]===1;const px=x*T,py=y*T;
+  if(wall){g.fillStyle=sh(pal[0],dark);g.fillRect(px,py,T,T);
+   const below=y+1<H&&!R.grid[y+1][x];
+   g.fillStyle=sh(pal[1],dark);g.fillRect(px,py,T,below?22:T);
+   g.fillStyle=sh(pal[0],dark*.9);for(let i=0;i<3;i++){g.fillRect(px+(i%2?0:16),py+i*7+2,14,1);g.fillRect(px+(i%2?16:0),py+i*7+2,14,1)}
+   if(below){g.fillStyle=sh(pal[0],dark*.7);g.fillRect(px,py+22,T,10)}
+   if(ret&&rs()<.12){g.fillStyle='#1a1a1a';g.fillRect(px+6,py+4,2,10);g.fillRect(px+8,py+13,6,2)}
+  }else{
+   let base=k==='c'||k==='d'?pal[2]:k==='r'||k==='f'?pal[3]:k==='lift'?'#4d5a66':k==='stairs'?'#56606a':k==='grass'?'#4d6b3b':k==='concrete'?'#6a6f72':k==='lane'?pal[2]:k==='cell'?'#2f3339':k==='alcove'?sh(pal[2],.7):k==='glass'?'#6d8fa0':pal[3];
+   g.fillStyle=sh(base,dark);g.fillRect(px,py,T,T);
+   g.fillStyle='rgba(0,0,0,.12)';g.fillRect(px,py,T,1);g.fillRect(px,py,1,T);
+   if(k==='c'){g.fillStyle='rgba(255,255,255,.04)';g.fillRect(px+2,py+15,28,2)}
+   if(k==='grass'){g.fillStyle='#5d7f45';for(let i=0;i<5;i++)g.fillRect(px+(rs()*28|0),py+(rs()*28|0),2,3)}
+   if(k==='lane'){g.fillStyle='#d8b74a';g.fillRect(px+2,py+2,4,28);g.fillRect(px+26,py+2,4,28)}
+   if(k==='mark'){g.strokeStyle='#e7c45c';g.lineWidth=2;g.strokeRect(px+3,py+3,26,26)}
+   if(k==='lift'){g.fillStyle='#9fb2c0';g.fillRect(px+4,py+2,10,28);g.fillRect(px+18,py+2,10,28);g.fillStyle='#1a222a';g.fillRect(px+14,py+2,4,28)}
+   if(k==='stairs'){g.fillStyle='#8a949c';for(let i=0;i<4;i++)g.fillRect(px+2,py+3+i*8,28,3)}
+   if(k==='cell'){g.fillStyle='rgba(255,255,255,.05)';g.fillRect(px+4,py+4,24,24)}
+   if(ret&&rs()<.08){g.fillStyle='rgba(0,0,0,.35)';g.fillRect(px+rs()*20,py+rs()*20,10,6)}
+  }
+ }
+ for(const p of R.paint){const px=p.x*T,py=p.y*T;
+  if(p.k==='stripe'){g.fillStyle='#d8b74a';g.fillRect(px+2,py+2,4,28);g.fillRect(px+26,py+2,4,28)}
+  else if(p.k==='mark'){g.strokeStyle='#e7c45c';g.lineWidth=2;g.strokeRect(px+3,py+3,26,26)}
+  else if(p.k==='blood'){g.fillStyle='#5a1f1f';g.fillRect(px+8,py+10,14,8);g.fillRect(px+4,py+16,6,4)}
+  else if(p.k==='debris'){g.fillStyle='#5b5146';g.fillRect(px+3,py+20,12,6);g.fillRect(px+18,py+8,8,5)}
+  else if(p.k==='arrow'){g.fillStyle='#e7c45c';g.fillRect(px+6,py+14,16,4);g.fillRect(px+18,py+10,4,12)}
+  else if(p.k==='drain'){g.fillStyle='#22282d';g.fillRect(px+10,py+10,12,12)}
+ }
+ g.font='bold 10px monospace';g.textAlign='center';
+ for(const l of R.labels){g.fillStyle=l.color||'#e4d7a8';g.fillText(l.text,l.x*T+T/2,l.y*T+T/2+4)}
+ return c;
+}
+function sprPlayer(g,p){
+ const bob=p.moving?Math.sin(p.anim)*2:0,crouch=p.stance==='crouch';
+ const skin='#e2b89a',cloth='#8e969c',hair=G.gender==='female'?'#5a3b2a':'#2b2b2b';
+ g.save();g.translate(Math.round(p.x),Math.round(p.y));
+ g.fillStyle='rgba(0,0,0,.35)';g.fillRect(-7,8,14,4);
+ const h=crouch?-4:-12;
+ g.fillStyle=cloth;g.fillRect(-6,h+8,12,crouch?8:12);
+ g.fillStyle='#4d5358';g.fillRect(-5,h+(crouch?16:20),4,crouch?3:6+bob/2);g.fillRect(1,h+(crouch?16:20),4,crouch?3:6-bob/2);
+ g.fillStyle=skin;g.fillRect(-5,h,10,9);g.fillStyle=hair;g.fillRect(-5,h-1,10,4);if(G.gender==='female')g.fillRect(-6,h,2,9);
+ g.fillStyle='#c8553d';g.fillRect(-2,h+10,4,2);
+ const fx=Math.cos(p.facing),fy=Math.sin(p.facing);g.fillStyle='#1c1c1c';g.fillRect(-5+fx*3+2,h+3+fy*2,2,2);g.fillRect(-1+fx*3+2,h+3+fy*2,2,2);
+ g.restore();
+}
+function sprRobot(g,r,t){
+ g.save();g.translate(Math.round(r.x),Math.round(r.y));
+ const off=r.disabled>0;const walk=Math.sin(t*9)*2;
+ g.fillStyle='rgba(0,0,0,.35)';g.fillRect(-9,10,18,4);
+ g.fillStyle=off?'#555c60':'#8d99a3';g.fillRect(-8,-6,16,16);
+ g.fillStyle='#5f6b74';g.fillRect(-7,10,5,6+walk);g.fillRect(2,10,5,6-walk);
+ g.fillStyle=off?'#60686d':'#b3bec6';g.fillRect(-6,-16,12,10);
+ g.fillStyle=off?'#3a2a2a':r.mode==='pursue'?'#ff5544':r.mode==='investigate'?'#f0c04a':'#e04848';g.fillRect(-4,-13,8,3);
+ g.fillStyle='#2b3238';g.fillRect(-11,-4,3,10);g.fillRect(8,-4,3,10);
+ if(r.kind==='drone'){g.fillStyle='#6c7f8c';g.fillRect(-12,-18,24,3);g.fillRect(-12,-21+Math.sin(t*40)*2,24,2)}
+ g.restore();
+}
+function sprSubject(g,s,t){
+ g.save();g.translate(Math.round(s.x),Math.round(s.y));
+ const tw=Math.sin(t*13)*1.5;g.fillStyle='rgba(0,0,0,.35)';g.fillRect(-8,8,16,4);
+ g.fillStyle='#6f8f6a';g.fillRect(-7+tw,-6,14,14);g.fillStyle='#86a37d';g.fillRect(-5,-15,10,9);
+ g.fillStyle='#d8e0a0';g.fillRect(-3,-12,2,2);g.fillRect(2,-12,2,2);
+ g.fillStyle='#4e6a4a';g.fillRect(-6,8,4,7);g.fillRect(2,8,4,7);g.fillRect(-11,-4+tw,4,9);g.fillRect(7,-4-tw,4,9);
+ g.restore();
+}
+function sprCaptive(g,x,y,t){
+ g.save();g.translate(x,y);g.fillStyle='#8e969c';g.fillRect(-12,-4,24,9);g.fillStyle='#e2b89a';g.fillRect(-16,-5,8,8);g.fillStyle=G.gender==='female'?'#2b2b2b':'#5a3b2a';g.fillRect(-17,-6,9,4);
+ g.fillStyle='#8a2f2f';g.fillRect(2,-2,8,4);g.fillStyle='#c8553d';g.fillRect(-4,-3,3,2);
+ if(Math.sin(t*1.2)>.9){g.fillStyle='#fff';g.fillRect(-13,-3,2,2)}g.restore();
+}
+function drawProp(g,p,t){
+ const px=p.x*T,py=p.y*T,w=p.w*T,h=p.h*T;
+ switch(p.kind){
+  case 'table':g.fillStyle='#7d8b94';g.fillRect(px+3,py+6,w-6,h-10);g.fillStyle='#b8c4cc';g.fillRect(px+5,py+8,w-10,h-16);break;
+  case 'bed':g.fillStyle='#4e5a63';g.fillRect(px+2,py+4,w-4,h-6);g.fillStyle='#8f9ba3';g.fillRect(px+4,py+6,10,h-10);g.fillStyle='#2b3238';g.fillRect(px+2,py+h-4,w-4,3);break;
+  case 'sink':g.fillStyle='#aab5bc';g.fillRect(px+8,py+8,16,14);g.fillStyle='#39434a';g.fillRect(px+13,py+12,6,6);break;
+  case 'crate':g.fillStyle='#8a6d47';g.fillRect(px+2,py+2,w-4,h-4);g.fillStyle='#5f4a2f';g.fillRect(px+2,py+h/2-1,w-4,2);g.fillRect(px+w/2-1,py+2,2,h-4);break;
+  case 'shelf':g.fillStyle='#6a5b49';g.fillRect(px+1,py+1,w-2,h-2);g.fillStyle='#8c7a63';for(let i=0;i<p.w*2;i++)g.fillRect(px+4+i*16,py+4,10,h-8);break;
+  case 'arm':{g.fillStyle='#8b94a0';g.fillRect(px+w/2-4,py+h/2-4,8,8);const a=p.angle||0;g.strokeStyle='#c9d2da';g.lineWidth=5;g.beginPath();g.moveTo(px+w/2,py+h/2);g.lineTo(px+w/2+Math.cos(a)*(p.len||40),py+h/2+Math.sin(a)*(p.len||40));g.stroke();g.fillStyle='#e05050';g.fillRect(px+w/2+Math.cos(a)*(p.len||40)-3,py+h/2+Math.sin(a)*(p.len||40)-3,6,6);break}
+  case 'generator':g.fillStyle='#5b6670';g.fillRect(px+2,py+2,w-4,h-4);g.fillStyle=p.on?'#7fe0a0':'#3a3f44';g.fillRect(px+6,py+6,8,6);g.fillStyle='#2b3238';g.fillRect(px+w-14,py+6,8,h-12);break;
+  case 'forklift':g.fillStyle='#d8a24a';g.fillRect(px+4,py+6,w-8,h-10);g.fillStyle='#2b3238';g.fillRect(px+2,py+h-8,8,6);g.fillRect(px+w-10,py+h-8,8,6);g.fillStyle='#7d8b94';g.fillRect(px+w-6,py+2,4,h-4);break;
+  case 'rubble':g.fillStyle='#5b5146';g.fillRect(px+2,py+10,w-4,h-12);g.fillStyle='#766a5c';g.fillRect(px+6,py+4,12,10);g.fillRect(px+w-16,py+12,10,8);break;
+  case 'camera':g.fillStyle='#2b3238';g.fillRect(px+10,py+4,12,10);g.fillStyle=p.off?'#333':'#e04848';g.fillRect(px+14,py+7,4,4);break;
+  case 'pipe':g.fillStyle='#6a7278';g.fillRect(px+13,py,6,h);g.fillStyle='#8c959b';g.fillRect(px+11,py+8,10,4);break;
+  case 'vehicle':g.fillStyle='#4a5560';g.fillRect(px+2,py+6,w-4,h-10);g.fillStyle='#2b3238';g.fillRect(px+6,py+h-6,10,5);g.fillRect(px+w-16,py+h-6,10,5);g.fillStyle='#6c8ea8';g.fillRect(px+6,py+8,w-12,8);break;
+  case 'bot':g.fillStyle='#d8a24a';g.fillRect(px+6,py+8,20,16);g.fillStyle='#2b3238';g.fillRect(px+4,py+22,8,6);g.fillRect(px+20,py+22,8,6);g.fillStyle=p.on?'#7fe0a0':'#3a3f44';g.fillRect(px+13,py+11,6,4);break;
+  case 'glassWall':g.fillStyle='rgba(140,190,210,.45)';g.fillRect(px+10,py,12,h);g.fillStyle='rgba(255,255,255,.5)';g.fillRect(px+12,py+4,2,h-8);break;
+  case 'decoy':g.fillStyle='#c9d2da';g.fillRect(px+10,py+6,12,20);g.fillStyle='#e04848';g.fillRect(px+13,py+9,6,3);break;
+  default:g.fillStyle='#6a7278';g.fillRect(px+4,py+4,w-8,h-8);
+ }
+}
+function drawItem(g,it,t,active){
+ const px=it.x*T,py=it.y*T,w=it.w*T,h=it.h*T;
+ const k=it.kind;
+ if(k==='console'||k==='terminal'){g.fillStyle='#3d4a55';g.fillRect(px+4,py+6,w-8,h-10);g.fillStyle=it.lit?it.lit(B):'#7fd0c6';g.fillRect(px+8,py+9,w-16,8);g.fillStyle='#1d2429';g.fillRect(px+8,py+19,w-16,4)}
+ else if(k==='panel'){g.fillStyle='#55606a';g.fillRect(px+8,py+6,16,20);g.fillStyle=it.lit?it.lit(B):'#e7c45c';g.fillRect(px+12,py+10,8,4);g.fillStyle='#2b3238';g.fillRect(px+12,py+17,8,6)}
+ else if(k==='lever'){g.fillStyle='#55606a';g.fillRect(px+10,py+8,12,16);g.fillStyle='#e04848';g.fillRect(px+14,py+4,4,10)}
+ else if(k==='memory'){const b=Math.sin(t*4)*2;g.fillStyle='#b8a6e5';g.fillRect(px+11,py+11+b,10,10);g.fillStyle='#fff';g.fillRect(px+14,py+14+b,4,4)}
+ else if(k==='window'){g.fillStyle='rgba(140,190,210,.5)';g.fillRect(px+4,py+8,w-8,16);g.fillStyle='rgba(255,255,255,.6)';g.fillRect(px+6,py+10,3,12)}
+ else if(k==='camera'){g.fillStyle='#2b3238';g.fillRect(px+10,py+4,12,10);g.fillStyle=it.off&&it.off(B)?'#333':'#e04848';g.fillRect(px+14,py+7,4,4);g.fillStyle='#55606a';g.fillRect(px+15,py+14,2,8)}
+ else if(k==='door'){g.fillStyle='#55606a';g.fillRect(px+4,py+2,w-8,h-4)}
+ else if(k==='token'){g.fillStyle='#d8b74a';g.fillRect(px+12,py+12,8,8)}
+ else if(k==='threshold'){g.fillStyle='rgba(255,240,200,.25)';g.fillRect(px,py,w,h)}
+ else if(k==='breach'){g.fillStyle='#4a3b36';g.fillRect(px+2,py+2,w-4,h-4);g.fillStyle='#1a1414';g.fillRect(px+8,py+6,6,20);g.fillRect(px+16,py+10,8,14)}
+ else if(k==='captive'){sprCaptive(g,px+16,py+16,t)}
+ else if(k==='spot'){g.strokeStyle='rgba(231,196,92,.5)';g.strokeRect(px+4,py+4,w-8,h-8)}
+ else{g.fillStyle='#6a7278';g.fillRect(px+6,py+6,w-12,h-12)}
+ if(active){g.strokeStyle='rgba(255,240,180,'+(0.6+0.4*Math.sin(t*8))+')';g.lineWidth=2;g.strokeRect(px+1,py+1,w-2,h-2)}
+}
+function drawDoor(g,d,t){
+ const px=d.x*T,py=d.y*T;const vert=R.grid[d.y]&&(R.grid[d.y][d.x-1]===1||d.x===0)&&(R.grid[d.y][d.x+1]===1);
+ const lock=typeof d.locked==='function'?d.locked(B,d):d.locked;
+ if(d.kind==='glass'){g.fillStyle='rgba(140,190,210,.45)';if(vert)g.fillRect(px+11,py,10,T);else g.fillRect(px,py+11,T,10);g.fillStyle='rgba(255,255,255,.5)';if(vert)g.fillRect(px+13,py+3,2,T-6);else g.fillRect(px+3,py+13,T-6,2);return}
+ if(d.open){g.fillStyle=d.kind==='cell'?'#3a4248':'#4d9c86';if(vert){g.fillRect(px+12,py,8,6);g.fillRect(px+12,py+T-6,8,6)}else{g.fillRect(px,py+12,6,8);g.fillRect(px+T-6,py+12,6,8)}}
+ else{g.fillStyle=d.kind==='cell'?'#5a636b':d.kind==='gate'?'#8b7355':lock?'#b8604a':'#4d9c86';if(vert)g.fillRect(px+10,py,12,T);else g.fillRect(px,py+10,T,12);
+  g.fillStyle='#1d2429';if(vert)g.fillRect(px+14,py+12,4,8);else g.fillRect(px+12,py+14,8,4);
+  if(d.kind==='cell'){g.fillStyle=d.statusLit?d.statusLit(B,d):'#e04848';g.fillRect(vert?px+24:px+2,vert?py+4:py+2,4,4)}}
+}
+function draw(){
+ ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#0b141c';ctx.fillRect(0,0,VW,VH);
+ if(modal==='title'||!G){drawTitle();return}
+ if(modal==='scene'&&Scenes.cur){drawScene();return}
+ if(!R)return;
+ const p=R.player,t=R.t;
+ if(R.dirty||!R.static){R.static=makeStatic();R.dirty=false}
+ let camX=clamp(p.x-VW/2,0,W*T-VW),camY=clamp(p.y-VH/2,0,H*T-VH);
+ if(R.shake>0&&!OPT.reduced){camX+=(rand()-.5)*6;camY+=(rand()-.5)*6}
+ ctx.save();ctx.translate(-Math.round(camX),-Math.round(camY));
+ ctx.drawImage(R.static,0,0);
+ // hide zones
+ for(const k of R.hides){const [x,y]=k.split(',').map(Number);ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(x*T,y*T,T,T)}
+ // hazards
+ for(const h of R.hazards){for(const [x,y] of h.tiles){const on=h.activeTile?h.activeTile(B,x,y):h.active(B);const px=x*T,py=y*T;
+  if(h.kind==='electric'){ctx.fillStyle=on?'rgba(255,230,80,.18)':'rgba(255,230,80,.04)';ctx.fillRect(px,py,T,T);if(on&&!OPT.reduced&&rand()<.15){ctx.fillStyle='#fff6a0';ctx.fillRect(px+rand()*28,py+rand()*28,3,3)}else if(on){ctx.fillStyle='#fff6a0';ctx.fillRect(px+14,py+14,3,3)}}
+  else if(h.kind==='gas'){ctx.fillStyle=on?'rgba(120,220,120,.3)':'rgba(120,220,120,.05)';ctx.fillRect(px,py,T,T);if(on){ctx.fillStyle='rgba(180,255,180,.5)';ctx.fillRect(px+8+Math.sin(t*2+x)*4,py+8,6,6)}}
+  else if(h.kind==='uv'){ctx.fillStyle=on?'rgba(170,120,255,.33)':'rgba(170,120,255,.05)';ctx.fillRect(px,py,T,T)}
+  else if(h.kind==='sweep'){ctx.fillStyle=on?'rgba(255,120,80,.25)':'rgba(255,120,80,.05)';ctx.fillRect(px,py,T,T)}
+  else if(h.kind==='push'){ctx.fillStyle=on?'rgba(230,200,80,.22)':'rgba(230,200,80,.08)';ctx.fillRect(px,py,T,T);ctx.fillStyle='#e7c45c';const o=on?(t*40)%T:8;ctx.fillRect(px+o,py+14,8,4)}
+ }}
+ for(const d of R.doors)drawDoor(ctx,d,t);
+ for(const pr of R.props)if(!pr.hidden)drawProp(ctx,pr,t);
+ const act=R.prompt;
+ for(const it of R.items)if(it.visible())drawItem(ctx,it,t,act&&act.type==='item'&&act.o===it&&modal==='none');
+ // vision cones
+ for(const g of R.guards){if(!g.active||g.disabled>0)continue;ctx.beginPath();ctx.moveTo(g.x,g.y);ctx.arc(g.x,g.y,g.vision,g.angle-g.fov/2,g.angle+g.fov/2);ctx.closePath();ctx.fillStyle=g.mode==='pursue'?'rgba(230,70,70,.22)':g.mode==='investigate'?'rgba(240,190,70,.16)':'rgba(230,200,120,.09)';ctx.fill()}
+ for(const g of R.guards)if(g.active)sprRobot(ctx,g,t);
+ for(const s of R.subjects)if(s.active)sprSubject(ctx,s,t);
+ sprPlayer(ctx,p);
+ for(const f of R.fx){const a=1-f.t/f.dur;if(f.kind==='pulse'){ctx.strokeStyle=`rgba(255,240,170,${a})`;ctx.lineWidth=2;ctx.beginPath();ctx.arc(f.x,f.y,6+f.t*60,0,Math.PI*2);ctx.stroke()}else if(f.kind==='text'){ctx.fillStyle=`rgba(255,255,255,${a})`;ctx.font='bold 11px monospace';ctx.textAlign='center';ctx.fillText(f.text,f.x,f.y-f.t*20);ctx.textAlign='left'}else if(f.kind==='ring'){ctx.strokeStyle=`rgba(255,80,80,${a})`;ctx.lineWidth=3;ctx.beginPath();ctx.arc(f.x,f.y,10+f.t*80,0,Math.PI*2);ctx.stroke()}
+  else if(f.kind==='grid'){ctx.fillStyle=`rgba(10,20,28,${Math.min(.9,a*2)})`;ctx.fillRect(f.x-40,f.y-60,80,80);for(let i=0;i<16;i++){const on=f.mask&(1<<i);ctx.fillStyle=on?`rgba(231,196,92,${Math.min(1,a*2)})`:`rgba(60,80,95,${Math.min(1,a*2)})`;ctx.fillRect(f.x-34+(i%4)*17,f.y-54+Math.floor(i/4)*17,13,13)}}}
+ // active timed windows
+ let ty=52;for(const k in R.timers){if(R.timers[k]>0){ctx.fillStyle='rgba(4,12,18,.75)';ctx.fillRect(camX+8,camY+ty,150,16);ctx.fillStyle='#e7c45c';ctx.fillRect(camX+10,camY+ty+2,146*Math.min(1,R.timers[k]/(R.timerMax&&R.timerMax[k]||R.timers[k])),12);ctx.fillStyle='#000';ctx.font='bold 10px monospace';ctx.fillText(k.toUpperCase(),camX+14,camY+ty+12);ty+=20}}
+ if(R.lightsUp>0){ctx.fillStyle=`rgba(255,250,220,${Math.min(.25,R.lightsUp*.25)})`;ctx.fillRect(camX,camY,VW,VH)}
+ if(G.phase==='r'&&!OPT.reduced&&Math.sin(t*7)>.97){ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(camX,camY,VW,VH)}
+ ctx.restore();
+ // HUD
+ ctx.fillStyle='rgba(4,12,18,.8)';ctx.fillRect(0,0,VW,26);ctx.fillStyle='#e7f2f2';ctx.font='13px monospace';ctx.textAlign='left';
+ const task=currentTask();ctx.fillText(`F${G.floor} ${G.phase==='e'?'ASCENT':'RETURN'} · ${NAMES[G.floor]}`,8,17);
+ ctx.fillStyle='#f0d79a';ctx.textAlign='right';ctx.fillText(task.slice(0,52),VW-8,17);ctx.textAlign='left';
+ const pr=promptFor(act);if(pr&&modal==='none'){ctx.fillStyle='rgba(4,12,18,.8)';ctx.fillRect(0,VH-26,VW,26);ctx.fillStyle='#fff';ctx.fillText(pr,8,VH-9)}
+ if(R.alertState!=='HIDDEN'){ctx.fillStyle=R.alertState==='SEEN'?'#ff6b5b':'#f0c04a';ctx.fillRect(VW-110,30,102,18);ctx.fillStyle='#000';ctx.font='bold 11px monospace';ctx.fillText(R.alertState==='SEEN'?'! SEEN':'? SUSPICIOUS',VW-104,43)}
+ if(R.hold){const it=R.hold;ctx.fillStyle='#000a';ctx.fillRect(220,VH-60,200,14);ctx.fillStyle='#ffe9a8';ctx.fillRect(222,VH-58,196*Math.min(1,R.holdT/(it.holdTime||1.5)),10)}
+ if(modal==='capture')drawCapture();
+ if(puzzle)drawPuzzle();
+ if(R.flash>0){ctx.fillStyle=`rgba(0,0,0,${Math.min(1,R.flash)})`;ctx.fillRect(0,0,VW,VH)}
+}
+function currentTask(){if(!R||!R.def)return '';const fs=FS();for(const o of R.def.objectives)if(!o.done(fs))return typeof o.label==='function'?o.label(fs):o.label;return R.def.exitLabel||(G.phase==='e'?'Reach the upper lift':'Reach the lower lift')}
+function drawCapture(){
+ const c=R.capture;ctx.fillStyle='rgba(25,11,11,.86)';ctx.fillRect(0,0,VW,VH);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='bold 24px monospace';ctx.fillText(c.title,320,170);
+ ctx.font='15px monospace';ctx.fillText(c.attempted?(c.result==='ok'?'You break free.':'Held. Returning to checkpoint.'):'ONE ATTEMPT · press SPACE when the marker is in the center',320,205);
+ ctx.fillStyle='#687a7d';ctx.fillRect(170,250,300,16);ctx.fillStyle='#79d8b0';ctx.fillRect(320-27,250,54,16);
+ const m=170+markerPos(c.t)*300;ctx.fillStyle=c.result==='fail'?'#ff6b5b':'#fff';ctx.fillRect(m-3,244,6,28);
+ ctx.fillStyle='#ddd';ctx.fillText(Math.max(0,c.limit-c.t).toFixed(1)+' s',320,300);ctx.textAlign='left';
+}
+function drawPuzzle(){
+ const p=puzzle;ctx.fillStyle='rgba(4,10,16,.9)';ctx.fillRect(0,0,VW,VH);ctx.textAlign='center';ctx.fillStyle='#eef5f7';ctx.font='bold 20px monospace';ctx.fillText(p.title,320,60);ctx.font='13px monospace';ctx.fillStyle='#9ab4c0';
+ if(p.kind==='grid'){ctx.fillText(p.hint,320,86);const n=p.size,cs=56,ox=320-n*cs/2,oy=120;
+  for(let i=0;i<n*n;i++){const x=ox+(i%n)*cs,y=oy+Math.floor(i/n)*cs;const on=p.mask&(1<<i);ctx.fillStyle=on?'#e7c45c':'#243540';ctx.fillRect(x+4,y+4,cs-8,cs-8);if(i===p.cur){ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.strokeRect(x+2,y+2,cs-4,cs-4)}}
+  ctx.fillStyle='#9ab4c0';ctx.fillText('Arrows move · E/Space toggles a contact · Enter submits · Esc steps back',320,oy+n*cs+30);
+  if(p.msg){ctx.fillStyle='#ff9c8a';ctx.fillText(p.msg,320,oy+n*cs+52)}
+ }else if(p.kind==='keypad'){ctx.fillText(p.hint,320,86);ctx.font='bold 36px monospace';ctx.fillStyle='#e7c45c';ctx.fillText((p.digits+'____').slice(0,p.len).split('').join(' '),320,170);ctx.font='13px monospace';ctx.fillStyle='#9ab4c0';ctx.fillText('Type digits · Backspace · Enter submits · Esc steps back',320,220);if(p.msg){ctx.fillStyle='#ff9c8a';ctx.fillText(p.msg,320,250)}}
+ else{const names=['▲','▶','▼','◀'];ctx.fillText(p.phase==='show'?'Watch the sequence.':p.phase==='input'?'Repeat it with arrows or 1–4.':p.phase==='ok'?'Sequence accepted. Synchronization window open.':p.msg,320,90);
+  for(let i=0;i<4;i++){const x=200+i*80,y=160;let lit=false;if(p.phase==='show'){const idx=Math.floor((p.t-.5)/.8);lit=idx>=0&&idx<p.seq.length&&p.seq[idx]===i&&((p.t-.5)%.8)<.5}ctx.fillStyle=lit?'#e7c45c':'#243540';ctx.fillRect(x,y,60,60);ctx.fillStyle='#fff';ctx.font='bold 26px monospace';ctx.fillText(names[i],x+30,y+40)}
+  ctx.font='13px monospace';ctx.fillStyle='#9ab4c0';ctx.fillText('Entered: '+p.input.map(i=>names[i]).join(' ')+'   ('+p.seq.length+' steps) · Esc cancels',320,260)}
+ ctx.textAlign='left';
+}
+function drawTitle(){
+ const t=performance.now()/1000;ctx.fillStyle='#070d13';ctx.fillRect(0,0,VW,VH);
+ for(let i=0;i<13;i++){ctx.fillStyle=`rgba(80,110,130,${.08+.04*Math.sin(t+i)})`;ctx.fillRect(60,40+i*30,520,22)}
+ ctx.fillStyle='#eef5f7';ctx.font='bold 80px monospace';ctx.textAlign='center';ctx.fillText('13',320,250);ctx.font='14px monospace';ctx.fillStyle='#8fa7b4';ctx.fillText('T H E   F A C I L I T Y',320,285);ctx.textAlign='left';
+}
+function drawScene(){
+ const s=Scenes.cur,st=s.def.steps[s.i],t=s.t;
+ ctx.fillStyle='#000';ctx.fillRect(0,0,VW,VH);
+ if(st.draw)st.draw(ctx,t,s.total);
+ if(st.text){ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,VH-110,VW,110);ctx.fillStyle='#f1f5f7';ctx.font='16px monospace';ctx.textAlign='center';
+  const lines=wrap(st.text,66);lines.forEach((l,i)=>ctx.fillText(l,320,VH-80+i*20));
+  ctx.fillStyle='#7d95a4';ctx.font='11px monospace';ctx.fillText(st.choice?'':(st.hold?'Enter · continue':'Enter · continue      Esc · skip scene'),320,VH-10);ctx.textAlign='left'}
+}
+function wrap(text,n){const words=text.split(' '),out=[];let line='';for(const w of words){if((line+' '+w).trim().length>n){out.push(line.trim());line=w}else line+=' '+w}if(line.trim())out.push(line.trim());return out}
+
+/* --- 20_floor13.js --- */
+/* ============================================================
+   FLOOR 13 · DETENTION · bespoke geometry, both journeys
+   ============================================================ */
+const F13={
+ corridor:[3,14,37,16],cell:[35,37,10,12],lab:[10,17,9,12],captiveRoom:[12,16,4,7],
+ geometry(ret){
+  B.rect(3,14,37,16,'c');                 // detention corridor
+  B.rect(19,3,21,13,'c');B.floor(20,2,'lift'); // lift corridor + upper lift
+  B.rect(4,9,9,12,'r');B.floor(6,13,'c');       // assessment room + doorway
+  B.rect(10,9,17,12,'r');B.floor(13,13,'c');B.floor(18,11,'c'); // lab + two doorways
+  B.rect(12,4,16,7,'cell');                     // captive holding room
+  for(const x of [23,27,31])B.rect(x,10,x+2,12,'cell'),B.floor(x+1,13,'c');  // north cells
+  B.rect(35,10,37,12,'cell');B.floor(36,13,'c');            // cell 13
+  for(const x of [23,27,35])B.rect(x,18,x+2,20,'cell'),B.floor(x+1,17,'c');  // south cells
+  B.rect(31,17,32,18,'alcove');B.hide(31,17);B.hide(32,17);B.hide(31,18);B.hide(32,18); // service alcove
+  B.rect(12,17,13,18,'alcove');B.hide(12,17);B.hide(13,17);B.hide(12,18);B.hide(13,18); // storage niche
+  B.label(20,4,'LIFT','#cfd8dc');B.label(20,6,'OPERATOR','#9fb0ba');B.label(20,7,'STANDBY','#9fb0ba');B.label(6,8,'ASSESSMENT');B.label(13,8,'TESTING 1');B.label(36,9,'CELL 13');
+  B.label(24,9,'CELL 9');B.label(28,9,'CELL 10');B.label(32,9,'CELL 11');B.label(24,21,'CELL 14');B.label(28,21,'CELL 15');B.label(36,21,'CELL 16');B.label(31,19,'SERVICE','#9fb0ba');B.label(12,19,'STORAGE','#9fb0ba');
+  if(ret){for(const [x,y] of [[8,15],[17,14],[25,16],[30,15],[20,9],[21,12]])B.paint(x,y,'debris');B.paint(14,15,'blood');B.paint(20,12,'blood')}
+  // captive room glass: three window panes on the lab's north wall
+  for(const x of [13,14,15])B.door({id:'glass'+x,x,y:8,kind:'glass',open:false,locked:'Reinforced glass.',persist:false,noRobot:true,label:'Observation window'});
+ }
+};
+/* Pattern-lock helpers · 4×4 grid, masks compared as cell sets */
+const LINES4=(()=>{const L=[];for(let r=0;r<4;r++)L.push([0,1,2,3].map(c=>r*4+c));for(let c=0;c<4;c++)L.push([0,1,2,3].map(r=>r*4+c));L.push([0,5,10,15]);L.push([3,6,9,12]);return L.map(cells=>cells.reduce((m,i)=>m|(1<<i),0))})();
+function submittedMasks(lock){return new Set(G.attempts.filter(a=>!lock||a.lock===lock).map(a=>a.mask))}
+function recordAttempt(lock,mask,ok){G.attempts.push({lock,mask,ok:!!ok,t:Date.now()});saveGame()}
+function chooseSolution(){ // clue-consistent (four contacts, one line) and never submitted anywhere
+ const used=submittedMasks(null);const cands=LINES4.filter(m=>!used.has(m));
+ if(cands.length)return cands[Math.floor(rand()*cands.length)];
+ for(let a=0;a<16;a++)for(let b=a+1;b<16;b++)for(let c=b+1;c<16;c++)for(let d=c+1;d<16;d++){const m=(1<<a)|(1<<b)|(1<<c)|(1<<d);if(!used.has(m))return m}
+ return null;
+}
+function maskHint(m){let s='';for(let i=0;i<16;i++)s+=(m&(1<<i))?'■':'·',s+=(i%4===3?'  ':'');return s.trim()}
+
+FLOOR[13]={};
+FLOOR[13].e={name:'DETENTION',bespoke:true,
+ objectives:[
+  {id:'wake',label:'Take in the assessment room',done:fs=>G.stage!=='assess'},
+  {id:'search',label:'Search the cell for a way out',done:fs=>fs.ability},
+  {id:'latch',label:'Feel for the latch circuit through the cell door',done:fs=>fs.doorOpened},
+  {id:'hide',label:'Hide in the service alcove or make for Testing',done:fs=>fs.doorOpened&&(fs.revealed||fs.labOpen)},
+  {id:'learn',label:fs=>fs.revealed?'Enter the operator’s pattern at the Testing 1 door':'Learn how the Testing 1 door is opened',done:fs=>fs.labOpen},
+  {id:'captive',label:'Reach the observation window',done:fs=>fs.captiveMet},
+  {id:'circuit',label:'Interrupt the security response at the circuit console',done:fs=>fs.liftReleased},
+  {id:'lift',label:'Release the upper lift at its control (the pattern opens Floor 12)',done:fs=>fs.liftReleased},
+ ],
+ exitReady:fs=>!!fs.liftReleased,exitMsg:'The lift control has not been released.',
+ spawn(B){const fs=B.fs;if(G.stage==='assess')return [6,11];if(fs.labOpen)return [12,11];return [36,11]},
+ checkpoint(B){const fs=B.fs;if(G.stage==='assess')return tc(6,11);if(fs.labOpen)return tc(12,11);return tc(36,11)},
+ build(B){
+  const fs=B.fs,rt=B.rt;F13.geometry(false);
+  rt.op={state:'standby',t:0,fault:0,fails:0};rt.camOff=0;rt.faultT=-1;rt.assessT=0;
+  // --- assessment room ---
+  B.prop({x:5,y:10,w:2,h:1,kind:'table'});
+  B.item({id:'table',x:5,y:11,w:2,h:1,kind:'spot',label:'Lie back on the table',visible:()=>G.stage==='assess',use(B){F13.choice(B,'table')}});
+  B.item({id:'acam',x:9,y:8,kind:'camera',label:'Camera',visible:()=>G.stage==='assess',use(B){B.say('A small camera. It follows you. The red light does not blink.')}});
+  B.item({id:'pipe',x:3,y:11,kind:'pipe',label:'Pipe in the wall',visible:()=>G.stage==='assess',use(B){SFX.taps();if(OPT.captions)ui.caption('[three taps · pause · two taps]',2.5);B.say('A pipe runs through the wall. The sound came along it: three taps, a pause, two. Deliberate. A pattern you cannot read.')}});
+  B.item({id:'tattoo',x:8,y:12,kind:'spot',label:'Look at your forearm',visible:()=>G.stage==='assess',use(B){B.say('A bandage. Under it, inked into the skin: 13. You try to remember your name. Nothing.')}});
+  B.door({id:'adoor',x:6,y:13,label:'Assessment door',persist:false,noRobot:true,locked:(B)=>G.stage!=='assess'?'Sealed.':null,
+   prompt:(B,d)=>G.stage==='assess'?'E: Try the door':null,use(B,d){if(G.stage!=='assess')return;F13.choice(B,'door')}});
+  // --- cell 13 ---
+  B.prop({x:35,y:10,w:1,h:2,kind:'bed'});B.prop({x:37,y:10,kind:'sink'});
+  B.item({id:'bed',x:35,y:12,kind:'spot',label:'Bolted bed',visible:()=>G.stage!=='assess',use(B){B.say('The bed is bolted to the floor. The blanket smells of disinfectant and nothing else.')}});
+  B.item({id:'sink',x:37,y:11,kind:'spot',label:'Sink',visible:()=>G.stage!=='assess',use(B){B.say('A steel sink. The water runs cold and stops on its own. No pipe you can reach.')}});
+  B.item({id:'ccam',x:36,y:9,kind:'camera',label:'Camera housing (hold E)',holdTime:.6,off:B=>B.rt.camOff>0,visible:()=>G.stage!=='assess',
+   holdStart(B){B.say('You press your palm against the camera housing.')},
+   hold(B,it,dt,tot){const rt=B.rt;if(tot>=.6){if(rt.camOff===0){SFX.pulse();B.effect({kind:'pulse',x:it.px,y:it.py});if(!B.has('ability')){B.flag('ability');B.say('A dry crackle under your palm. The red light dies. Something in you reached into the wire and moved it.')}else B.say('The red light dies under your hand.')}
+     rt.camOff+=dt;if(rt.camOff>4&&!rt.camChecked){rt.camChecked=true;F13.dispatch(B,'camCheck','Camera fault, cell 13. Operator dispatched.')}}},
+   release(B,it,tot){const rt=B.rt;if(rt.camOff>0){rt.camRestart=.8;B.say('You let go. The housing clicks; the red light comes back.')}rt.camOff=0}});
+  const cell=B.door({id:'cell13',x:36,y:13,kind:'cell',label:'Cell 13 door',persist:false,noRobot:true,holdTime:1.6,statusLit:(B,d)=>d.open?'#7fd0c6':B.rt.latchT>0?'#e7c45c':'#e04848',
+   prompt:(B,d)=>d.open?null:B.has('ability')?'E: Feel for the latch circuit (hold)':'E: Examine the door',
+   use(B,d){if(d.open)return;if(!B.has('ability')){B.say('Smooth metal. No handle, no keypad on this side. It opened for the operator; it will not open for you.');SFX.doorDeny();return}
+    d.px=tc(d.x,d.y).x;d.py=tc(d.x,d.y).y;d.reach=46;R.hold=d;R.holdT=0;B.say('You flatten your hand against the door and feel for anything live.')},
+   hold(B,d,dt,tot){B.rt.latchT=tot;if(tot>.5&&!d.warm){d.warm=true;B.say('There. A warm point under the surface — a live trace to the latch. You lean on it.');SFX.pulse()}
+    if(tot>=1.6){R.hold=null;d.open=true;d.warm=false;B.rt.latchT=0;R.dirty=true;SFX.door();B.flag('doorOpened');G.stage='corridor';saveGame();B.rt.faultT=0;B.say('The latch lets go. The door slides back. The corridor is empty, for now.')}},
+   release(B,d,tot){B.rt.latchT=0;if(!d.open){d.warm=false;B.say('You let go. The latch settles back into place.')}}});
+  // other detention cells: distinct codes the player never gets
+  const cells=[[24,13,'Cell 9'],[28,13,'Cell 10'],[32,13,'Cell 11'],[24,17,'Cell 14'],[28,17,'Cell 15'],[36,17,'Cell 16']];
+  for(const [x,y,label] of cells)B.door({id:label.replace(' ',''),x,y,kind:'cell',label:label+' door',persist:false,noRobot:true,prompt:'E: Test the pattern lock ('+label+')',
+   use(B,d){openGrid({title:label.toUpperCase()+' · PATTERN LOCK',hint:'Each cell has its own code. Yours would not open this one.',onSubmit(mask){recordAttempt(d.id,mask,false);F13.fault(B,d);SFX.doorDeny();return {msg:'Rejected. '+label+' keeps its own code.'}}})}});
+  // --- lab / testing 1 ---
+  B.door({id:'labdoor',x:13,y:13,label:'Testing 1 door',persist:true,prompt:(B,d)=>d.open?null:G.learned.pattern?'E: Apply the remembered pattern':'E: Pattern lock',
+   use(B,d){if(d.open)return;
+    if(G.learned.pattern){B.say('Contact. The pattern you remember runs through the lock. Testing 1 opens.');SFX.confirm();B.openDoor('labdoor');B.flag('labOpen');return}
+    const fs=B.fs;openGrid({title:'TESTING 1 · PATTERN LOCK',hint:fs.revealed?'You remember the operator’s shape: '+maskHint(fs.solution):'Four contacts. The operator knows the shape; you do not, yet.',
+     onSubmit(mask){const ok=fs.solution!=null&&mask===fs.solution;recordAttempt('lab',mask,ok);
+      if(ok){G.learned.pattern=mask;G.learned.f12=true;saveGame();B.openDoor('labdoor');B.flag('labOpen');B.say('The lock accepts it. You will not need to think about this shape again: your hands know it now.');SFX.confirm();return {close:true}}
+      F13.fault(B,d);SFX.doorDeny();return {msg:'Rejected. '+(fs.revealed?'That is not the shape you saw.':'The lock expects a shape you have not seen.')}}})}});
+  B.door({id:'labside',x:18,y:11,label:'Service door',persist:false,noRobot:false,locked:(B)=>B.has('labOpen')?null:'Locked from the lift side.',closable:true});
+  for(const x of [13,14,15]){const g=B.doorById('glass'+x);g.prompt=(B)=>B.has('captiveMet')?'E: Look through the window':'E: Look through the observation window';g.use=(B)=>{if(B.has('captiveMet')){B.say(pronoun().cap+' has not moved. '+pronoun().cap+' is watching the door, not you.');return}Scenes.play('captive',()=>{B.flag('captiveMet');F13.response(B)})}}
+  B.item({id:'captiveE',x:14,y:6,kind:'captive',label:'',visible:()=>true,prompt:()=>null,use(){}});
+  B.item({id:'circuit',x:10,y:9,kind:'console',solid:true,label:'Circuit console',lit:B=>B.active('circuit')?'#e7c45c':'#7fd0c6',prompt:'E: Interrupt the operator’s power loop',
+   use(B){if(!B.has('captiveMet')){B.say('The console shows the operator’s power loop and the lift lobby. Nothing is moving out there yet.');return}
+    B.timer('circuit',10);const op=R.guards[0];op.disabled=10;op.mode='patrol';op.path=null;SFX.pulse();B.say('You interrupt the operator’s loop. It drops where it stands. Ten seconds, maybe less — go.');if(OPT.captions)ui.caption('[operator powers down]',2)}});
+  B.item({id:'mem13',x:17,y:9,kind:'memory',label:'Worn token in a tray',visible:()=>!G.memories.includes(13),use(B){collectMemory(13)}});
+  B.item({id:'liftctl',x:18,y:3,kind:'panel',label:'Lift control',lit:B=>B.has('liftReleased')?'#7fd0c6':'#e04848',prompt:B=>B.has('liftReleased')?'E: Lift released':'E: Release the lift',
+   use(B){if(B.has('liftReleased')){B.say('The lift is released. Call it from the doors.');return}
+    if(!G.learned.pattern){B.say('A pattern lock, the same family as the Testing door. Your hand finds nothing it knows.');SFX.doorDeny();return}
+    SFX.confirm();B.flag('liftReleased');B.announce('Lift 13 released. Destination Floor 12 authorized.');B.say('Contact. The remembered pattern releases the lift. Floor 12 is the only destination offered.')}});
+  // --- the single operator ---
+  B.guard({id:'op',tx:20,ty:5,angle:Math.PI/2,speed:70,pursueSpeed:110,label:'OPERATOR',route:[]});
+  if(fs.captiveMet)F13.response(B,true);
+ },
+ onReset(B){const rt=B.rt;rt.op={state:'standby',t:0,fault:0,fails:0};rt.camOff=0;rt.faultT=-1;const c=B.doorById('cell13');if(c&&!B.has('labOpen'))c.open=false;if(B.has('captiveMet'))F13.response(B,true);R.dirty=true},
+ onExpire(B,k){if(k==='circuit')B.say('The operator reboots. Its head comes up.')},
+ tick(dt,B){
+  const rt=B.rt,fs=B.fs,op=R.guards[0];
+  if(G.stage==='assess'){rt.assessT+=dt;const d=B.doorById('adoor');if(rt.assessT>4&&!d.open&&!rt.aOpened){rt.aOpened=true;d.open=true;R.dirty=true;SFX.door();B.say('The door begins to open. Beyond it, heavy footsteps, evenly spaced.');if(OPT.captions)ui.caption('[robotic footsteps approaching]',2.5)}
+   if(rt.aOpened){rt.stepT=(rt.stepT||0)-dt;if(rt.stepT<=0){SFX.robotStep(true);rt.stepT=.7}}return}
+  if(rt.camRestart>0){rt.camRestart-=dt}
+  if(rt.faultT>=0){rt.faultT+=dt;if(rt.faultT>2.5&&rt.op.state==='standby'&&!rt.faultSent){rt.faultSent=true;F13.dispatch(B,'doorCheck','Door opened without authorization, cell 13. Operator dispatched.')}}
+  F13.operator(B,op,dt);
+ }
+};
+F13.choice=function(B,which){
+ if(G.stage!=='assess')return;const fs=B.fs;fs.choice=which;
+ if(which==='door'){R.lightsUp=2.5;B.announce('Subject 13. Remain in place.');B.say('You push at the door. It is already moving. The lights come up hard, and the footsteps do not change pace.')}
+ else{B.announce('Compliance noted.');B.say('You lie back and watch the ceiling. The door finishes opening on its own.')}
+ keys.clear();setTimeout(()=>Scenes.play('escort',()=>{G.stage='cell';saveGame();buildFloor();ui.say('The door seals behind you. The isolation is complete. Search the cell.')}),1200);
+};
+F13.fault=function(B,d){const rt=B.rt;rt.op.fails++;if(rt.op.fails>=3&&rt.op.state==='standby'){rt.op.fails=0;F13.dispatch(B,'labCheck','Repeated access failure, '+(d.id==='labdoor'?'Testing 1':d.label.replace(' door',''))+'. Operator dispatched.')}else if(rt.op.fails===2)B.say('The lock flashes twice. Somewhere, something has noticed.')};
+F13.dispatch=function(B,kind,text){const rt=B.rt,op=R.guards[0];if(rt.op.state!=='standby'||op.mode==='pursue')return;B.announce(text);rt.op.state=kind;rt.op.t=0;op.mode='script';op.path=null;if(OPT.captions)ui.caption('[footsteps start, far off]',2.5)};
+F13.response=function(B,silent){const op=R.guards[0];B.rt.op.state='response';op.route=[[20,4],[20,12]];op.mode='patrol';op.homeMode='patrol';op.path=null;op.speed=60;if(!silent){B.announce('Unauthorized presence, Testing 1. Security response active.');B.say('Beyond the service door the operator has taken up a sweep of the lift lobby. The circuit console shows its power loop.')}};
+F13.reveal=function(B){const fs=B.fs;if(fs.revealed)return;if(fs.solution==null)fs.solution=chooseSolution();fs.revealed=true;saveGame();ui.objectives();
+ B.effect({kind:'grid',x:13*T+16,y:12*T,mask:fs.solution,dur:4});SFX.chime();B.say('The operator presses four contacts on the Testing 1 lock, in a line. You watch its hand. You memorize the shape.');if(OPT.captions)ui.caption('[the lock chimes and releases]',2.5)};
+F13.operator=function(B,op,dt){
+ const rt=B.rt,st=rt.op;if(op.mode!=='script'){if(st.state!=='standby'&&st.state!=='response'&&op.mode==='patrol'){st.state='standby';op.route=[]}return}
+ st.t+=dt;
+ // scripted operator still sees the player
+ if(canSee(op)&&R.grace<=0){op.mode='pursue';op.lastSeen={x:R.player.x,y:R.player.y};op.lostT=2.5;op.path=null;SFX.alarm();st.state='standby';B.say('The operator turns. It has you in view.');return}
+ st.stepT=(st.stepT||0)-dt;if(st.stepT<=0){const far=dist(op,R.player)>260;SFX.robotStep(far);st.stepT=.55}
+ const go=(tx,ty,speed)=>moveEntity(op,tx,ty,speed||80,dt);
+ const face=a=>{op.angle=a};
+ switch(st.state){
+  case 'camCheck':case 'doorCheck':
+   if(!st.phase){if(go(36,14)){st.phase='look';st.t=0;face(-Math.PI/2)}}
+   else if(st.phase==='look'){face(-Math.PI/2);if(st.t>2){st.phase=null;st.t=0;
+     if(st.state==='camCheck'){B.announce('Anomaly cleared, cell 13.');st.state='back'}
+     else{const inCell=B.inRoom(R.player,F13.cell);if(inCell){op.mode='pursue';op.lastSeen={x:R.player.x,y:R.player.y};op.lostT=3;st.state='standby';B.say('The operator looks into the open cell. It looks at you.');return}
+      B.announce('Subject 13 unaccounted for. Sweeping Testing wing.');st.state='labCheck';st.phase=null}}}
+   break;
+  case 'labCheck':
+   if(!st.phase){if(go(13,14)){st.phase='operate';st.t=0;face(-Math.PI/2)}}
+   else if(st.phase==='operate'){face(-Math.PI/2);if(st.t>.8&&!st.shown){st.shown=true;const p=R.player;const seeIt=dist(p,tc(13,13))<230&&losTiles(tc(13,14),p);if(seeIt)F13.reveal(B);else B.say('Somewhere down the corridor a lock chimes. You could not see what the operator did.');}
+    if(st.t>2.6){const d=B.doorById('labdoor');if(!d.open){d.open=true;d.robotOpened=true;R.dirty=true;SFX.door()}st.phase='inside';st.t=0}}
+   else if(st.phase==='inside'){if(go(13,11)){face(Math.PI/2);if(st.t>3){st.phase='out';st.t=0}}}
+   else if(st.phase==='out'){if(go(13,14)){const d=B.doorById('labdoor');if(d.robotOpened&&!B.has('labOpen')){d.open=false;d.robotOpened=false;R.dirty=true;SFX.door()}st.phase=null;st.shown=false;st.state='back';B.announce('Sweep complete. No contact.')}}
+   break;
+  case 'back':if(go(20,5)){st.state='standby';op.mode='patrol';op.route=[];op.path=null;face(Math.PI/2);rt.camChecked=false}break;
+  default:st.state='standby';op.mode='patrol';
+ }
+};
+
+/* ---------- Floor 13 · RETURN ---------- */
+FLOOR[13].r={name:'DETENTION',bespoke:true,noExitTile:true,exitLabel:'Reach the captive',
+ objectives:[
+  {id:'power',label:'Route emergency power to Testing 1 containment',done:fs=>fs.emPower},
+  {id:'lure',label:'Trigger the lure and let the subject enter the chamber',done:fs=>fs.contained},
+  {id:'close',label:'Close the chamber from the corridor while it is occupied',done:fs=>fs.contained},
+  {id:'breach',label:'Open the rescue hatch to the holding room',done:fs=>fs.breachOpen},
+ ],
+ exitReady:fs=>!!fs.breachOpen,exitMsg:'',
+ spawn(){return [20,3]},checkpoint(){return tc(20,3)},
+ build(B){
+  const fs=B.fs;F13.geometry(true);
+  if(fs.breachOpen){B.floor(17,5,'c');B.floor(18,5,'c')}
+  B.door({id:'cell13',x:36,y:13,kind:'cell',open:true,persist:false,label:'Cell 13 door'});
+  B.door({id:'labdoor',x:13,y:13,label:'Containment door',persist:false,noRobot:true,open:false,locked:(B)=>fs.contained?'Sealed. Something moves behind it.':'Motorized. The corridor panel controls it.'});
+  B.door({id:'labside',x:18,y:11,label:'Service door',persist:false,noRobot:true,locked:'Jammed shut.'});
+  B.item({id:'empower',x:18,y:7,kind:'panel',label:'Emergency power panel',lit:B=>B.has('emPower')?'#7fd0c6':'#e04848',prompt:B=>B.has('emPower')?'E: Power routed':'E: Route emergency power to containment',
+   use(B){if(B.has('emPower'))return;B.flag('emPower');SFX.confirm();B.announce('Emergency power routed. Testing 1 containment door and lure online.');B.say('The panel takes what little power is left and sends it to Testing 1. The chamber door motor wakes up.')}});
+  B.item({id:'lurectl',x:12,y:13,side:'s',kind:'panel',label:'Containment panel',lit:B=>B.rt.lure?'#e7c45c':B.has('contained')?'#7fd0c6':'#9fb0ba',
+   prompt:B=>B.has('contained')?'E: Chamber sealed':B.rt.lure?'E: Close the chamber door':'E: Trigger the lure',
+   use(B){const rt=B.rt,d=B.doorById('labdoor'),s=R.subjects[0];
+    if(B.has('contained')){B.say('Sealed. The thing inside throws itself at the door and stops.');return}
+    if(!B.has('emPower')){B.say('Dead panel. Nothing on this wing has power.');SFX.deny();return}
+    if(!rt.lure){rt.lure=true;d.open=true;R.dirty=true;SFX.door();SFX.lure();if(OPT.captions)ui.caption('[a tone pulses inside the chamber]',2.5);s.mode='lured';s.target=[13,11];s.lingerFor=5;s.path=null;s.chase=0;s.onLeave=()=>{B.say('The subject loses interest and comes back out. Reset the lure and try again.')};B.say('The chamber door opens and a tone pulses inside. Down the corridor, something answers it. Stand clear — the storage niche is behind you — and close the door once it is in.');return}
+    const inside=B.inRoom(s,F13.lab);d.open=false;R.dirty=true;SFX.door();rt.lure=false;
+    if(inside){s.mode='held';s.active=true;B.flag('contained');SFX.confirm();B.announce('Containment restored, Testing 1.');B.say('The door seals with the subject inside. It screams once. The rescue hatch interlock releases.')}
+    else{s.mode='roam';s.target=null;B.say('The door closes on an empty chamber. The lure resets; trigger it again.');SFX.deny()}}});
+  B.item({id:'hatch',x:18,y:5,kind:'breach',label:'Rescue hatch',prompt:B=>B.has('breachOpen')?null:'E: Open the rescue hatch',visible:()=>!B.has('breachOpen'),
+   use(B){if(!B.has('contained')){B.say('HATCH LOCKED — CONTAINMENT BREACH ACTIVE. The interlock will not release while the subject is loose.');SFX.doorDeny();return}
+    B.flag('breachOpen');B.floor(17,5,'c');B.floor(18,5,'c');R.dirty=true;SFX.gate();R.shake=.6;B.say('The hatch gives. Beyond it, the wall of the holding room has already half collapsed. You climb through.')}});
+  B.item({id:'captive',x:14,y:6,kind:'captive',label:'The captive',prompt:'E: Go to '+pronoun().them,use(B){Scenes.play('reunion')}});
+  B.subject({id:'sub',tx:25,ty:15,area:[4,14,37,16],speed:65});
+  if(fs.contained){const s=R.subjects[0];const c=tc(13,11);s.x=c.x;s.y=c.y;s.mode='held';s.home={x:c.x,y:c.y}}
+ },
+ onReset(B){const s=R.subjects[0];if(B.has('contained')){const c=tc(13,11);s.x=c.x;s.y=c.y;s.mode='held'}else{const d=B.doorById('labdoor');d.open=false;B.rt.lure=false}R.dirty=true},
+ tick(dt,B){const s=R.subjects[0];if(B.has('contained')){const c=tc(13,11);s.x=c.x+Math.sin(R.t*3)*6;s.y=c.y;s.mode='held';s.angle+=dt*3;if(Math.floor(R.t)%4===0&&R.t%1<dt)SFX.growl()}},
+};
+function collectMemory(f){if(G.memories.includes(f))return;G.memories.push(f);SFX.memory();ui.say('Memory fragment · '+MEMORIES[f]);ui.journal();saveGame();if(OPT.captions)ui.caption('[a fragment of memory]',2);if(f===6)setTimeout(()=>Scenes.play('childhood'),600)}
+
+/* --- 30_floors.js --- */
+/* ============================================================
+   FLOORS 12 → 1 · escape and return recipes
+   ============================================================ */
+function dev(B,o){ // generic device: requirements, optional timer window, durable flag
+ return B.item(Object.assign({kind:'console',solid:true,
+  prompt:B=>o.doneFlag&&B.has(o.doneFlag)?'E: '+(o.doneLabel||o.label+' (done)'):'E: '+o.label,
+  lit:B=>o.doneFlag&&B.has(o.doneFlag)?'#7fd0c6':o.timerName&&B.active(o.timerName)?'#e7c45c':'#e04848',
+  use(B){if(o.doneFlag&&B.has(o.doneFlag)){B.say(o.doneMsg||'Already done.');return}
+   for(const r of (o.requires||[])){const ok=typeof r==='function'?r(B):B.has(r);if(!ok){B.say(o.deny||'Not ready.');SFX.deny();if(o.onDeny)o.onDeny(B);return}}
+   if(o.timerName)B.timer(o.timerName,o.timerSec);
+   if(o.doneFlag)B.flag(o.doneFlag);
+   SFX.confirm();B.say(o.msg||'Done.');if(o.announce)B.announce(o.announce);if(o.after)o.after(B)}},o));
+}
+function memoryAt(B,f,room,label){const [x,y]=roomCenter(room);B.item({id:'mem'+f,x:x+2,y:y+1,kind:'memory',label:label||'Memory fragment',visible:()=>!G.memories.includes(f),use(){collectMemory(f)}})}
+function patrol(B,id,route,speed=55){return B.guard({id,tx:route[0][0],ty:route[0][1],route,speed})}
+function wallBar(y,x0=18,x1=22,skip){for(let x=x0;x<=x1;x++)if(x!==skip)B.wall(x,y)}
+function sealRoom(B,room,s){const [x0,x1,y0,y1]=[ROOMS[room][0],ROOMS[room][1],ROOMS[room][2],ROOMS[room][3]];return B.inRoom(s,[x0,x1,y0,y1])}
+function lurePanel(B,o){ // shared lure-then-seal control used by return floors
+ return B.item({id:o.id,x:o.x,y:o.y,kind:'panel',label:o.label,lit:B=>B.has(o.flag)?'#7fd0c6':B.rt.lure?'#e7c45c':'#9fb0ba',
+  prompt:B=>B.has(o.flag)?'E: Sealed':B.rt.lure?'E: Seal '+o.roomName:'E: '+o.lureLabel,
+  use(B){const rt=B.rt,s=R.subjects[0],d=B.doorById(o.door);
+   if(B.has(o.flag)){B.say(o.roomName+' is sealed.');return}
+   for(const r of (o.requires||[]))if(!B.has(r)){B.say(o.deny);SFX.deny();return}
+   if(!rt.lure){rt.lure=true;if(d)d.open=true;R.dirty=true;SFX.lure();if(OPT.captions)ui.caption('[alarm tone from '+o.roomName+']',2.5);s.mode='lured';s.target=o.target;s.lingerFor=o.linger||5;s.path=null;s.chase=0;s.onLeave=()=>{B.say('The subject wanders back out. Reset the lure and try again.')};B.say(o.lureMsg+' Stand clear of its path, then come back to the panel.');return}
+   const inside=sealRoom(B,o.room,s);rt.lure=false;if(d){d.open=false;R.dirty=true;SFX.door()}
+   if(inside){s.mode='held';B.flag(o.flag);SFX.confirm();B.announce(o.announce||'Containment restored.');B.say(o.sealMsg)}
+   else{s.mode='roam';s.target=null;B.say('Sealed on an empty room. The control resets; trigger the lure again.');SFX.deny()}}});
+}
+function heldSubject(B,room){const s=R.subjects[0];const [x,y]=roomCenter(room);const c=tc(x,y);s.x=c.x;s.y=c.y;s.mode='held';s.home={x:c.x,y:c.y}}
+function occupancyCue(B,room){const s=R.subjects[0];if(sealRoom(B,room,s)){if(Math.floor(R.t*2)%6===0&&R.t%.5<STEP)SFX.growl();B.effect({kind:'ring',x:s.x,y:s.y,dur:.3})}}
+function stairLanding(B){B.floor(1,15,'r');B.floor(1,17,'r');B.floor(1,16,'stairs');B.floor(2,16,'c')}
+
+/* ======================= FLOOR 12 · PROCESSING ======================= */
+FLOOR[12]={};
+FLOOR[12].e={name:'PROCESSING',
+ objectives:[{id:'o1',label:'Scout: maintenance office, service stairs, or inspect the scanner',done:fs=>fs.spoofed||fs.landingUnlocked||fs.inspected},
+  {id:'o2',label:'Spoof a maintenance identity (short-lived) and cross the scanner',done:fs=>fs.crossed||fs.usedStairs},
+  {id:'o3',label:'Interrupt the restraint cycle, then release the lift',done:fs=>fs.liftReleased||fs.usedStairs},
+  {id:'o4',label:'Alternative: power and unlock the service-stair landing',done:fs=>fs.landingUnlocked||fs.liftReleased}],
+ exitReady:fs=>!!fs.liftReleased,exitMsg:'Restraint arms cover the lift lobby. Release the lift at its control.',
+ build(B){const fs=B.fs;
+  wallBar(12,18,22,20);B.door({id:'scanner',x:20,y:12,open:true,persist:false,noRobot:true,label:'Scanner gate',locked:null,prompt:()=>null,use(B){B.say('The scanner reads you as you pass. Nothing to operate here.')}});
+  for(let y=13;y<=20;y++)B.floor(20,y,'lane');B.label(20,12,'SCAN','#fff');B.label(16,22,'MAINT →','#e7c45c');B.label(16,15,'← STAIRS','#e7c45c');B.label(16,24,'OFFICE');
+  B.hazard({id:'scan',kind:'uv',tiles:[[20,12]],active:B=>!B.active('spoof'),msg:'“Transfer authorization required.” The lane restraints close on you and hold you for review. You are returned to the lift.'});
+  B.item({id:'scaninfo',x:18,y:12,side:'s',kind:'panel',label:'Scanner housing',prompt:'E: Inspect the scanner',use(B){B.flag('inspected');B.say('The scanner checks transfer authorization or staff clearance. The floor code got you in; this wants something else. A maintenance credential would pass, briefly.')}});
+  dev(B,{id:'badge',x:8,y:24,label:'Spoof maintenance identity',timerName:'spoof',timerSec:14,msg:'The office terminal issues a maintenance credential in your name. It expires fast. Go.',after:B=>B.flag('spoofed'),prompt:B=>'E: Spoof maintenance identity (renewable)'});
+  dev(B,{id:'breaker',x:4,y:23,label:'Maintenance breaker',doneFlag:'maintPower',msg:'The breaker closes. A line marked SERVICE LANDING comes alive.',kind:'panel'});
+  B.door({id:'landing',x:2,y:16,label:'Stair landing lock',locked:B=>B.has('landingUnlocked')?null:'LANDING LOCK — no power. The maintenance office should have a breaker.'});
+  stairLanding(B);dev(B,{id:'landingctl',x:4,y:14,label:'Landing lock release',doneFlag:'landingUnlocked',requires:['maintPower'],deny:'The release is dead. It needs the maintenance breaker.',msg:'The landing lock releases. The service stairs are open, and the facility will notice.',kind:'panel'});
+  B.item({id:'stairs',x:1,y:16,kind:'stairs',label:'Service stairs up',prompt:'E: Climb to Floor 11',use(B){B.flag('usedStairs');fsOf(11,'e').stairAlert=true;B.announce('Service stair breach, Floor 12. Patrol dispatched to Floor 11 landing.');transitionStairs(11,[1,16])}});
+  B.hazard({id:'arms',kind:'sweep',tiles:[[19,3],[20,3],[21,3],[19,4],[20,4],[21,4]],active:B=>!B.active('restraint')&&!B.has('liftReleased'),msg:'The restraint arms take you off your feet and hold you for AI review. You are returned to the lift.'});
+  dev(B,{id:'restraint',x:31,y:7,label:'Interrupt the restraint cycle',timerName:'restraint',timerSec:10,msg:'The restraint cycle pauses. The lobby arms fold back for a few seconds.'});
+  dev(B,{id:'liftctl',x:18,y:3,label:'Release the lift',doneFlag:'liftReleased',kind:'panel',msg:'Lift released. The restraint arms stand down for good.',announce:'Lift 12 released.'});
+  patrol(B,'g1',[[20,5],[20,10]],50);patrol(B,'g2',[[20,22],[20,16]],45);
+  memoryAt(B,12,'EB','Intake records');
+ },
+ tick(dt,B){const p=R.player,rt=B.rt;const [tx,ty]=B.tileOf(p);if(ty>=13&&ty<=20&&tx===20&&!rt.scanSaid){rt.scanSaid=true;B.announce('Transfer authorization required.')}
+  if(ty<12&&tx>=18&&tx<=22&&!B.has('crossed')&&B.active('spoof'))B.flag('crossed');},
+ onExpire(B,k){if(k==='spoof')B.say('The maintenance credential expires.');if(k==='restraint')B.say('The restraint cycle resumes.')}
+};
+FLOOR[12].r={name:'PROCESSING',
+ objectives:[{id:'o1',label:'Activate the restraint alarm to attract the roaming subject',done:fs=>fs.contained},{id:'o2',label:'Engage restraint while the subject stands in the marked footprint',done:fs=>fs.contained}],
+ exitReady:fs=>!!fs.contained,exitMsg:'The lower lift will not answer while an escaped subject roams Processing.',
+ build(B){const fs=B.fs;wallBar(12,18,22,20);B.door({id:'scanner',x:20,y:12,open:true,persist:false,noRobot:true,label:'Dead scanner',prompt:()=>null,use(B){B.say('The scanner is dead. Its lane markings are scorched.')}});
+  for(const [x,y] of [[19,9],[20,9],[19,10],[20,10],[19,11],[20,11]])B.paint(x,y,'mark');B.label(21,8,'RESTRAINT','#e7c45c');B.paint(20,14,'debris');B.paint(19,22,'blood');
+  dev(B,{id:'alarm',x:31,y:7,label:'Restraint alarm',prompt:B=>'E: Sound the restraint alarm',use(B){const s=R.subjects[0];B.rt.lure=true;SFX.lure();s.mode='lured';s.target=[20,10];s.lingerFor=4;s.path=null;s.chase=0;s.onLeave=()=>{B.rt.lure=false;B.say('The subject drifts out of the footprint. Sound the alarm again to reset the lure.')};B.say('The restraint station begins to chime. Something in the corridor turns toward it. Engage the restraint from the side lever when it stands in the footprint.')}});
+  B.item({id:'engage',x:23,y:10,kind:'lever',label:'Restraint lever',prompt:B=>B.has('contained')?'E: Restraint engaged':'E: Engage restraint',use(B){const s=R.subjects[0];if(B.has('contained')){B.say('The subject is held fast.');return}
+   const [sx,sy]=B.tileOf(s);const inside=sx>=19&&sx<=20&&sy>=9&&sy<=11;if(inside){s.mode='held';const c=tc(20,10);s.x=c.x;s.y=c.y;B.flag('contained');SFX.confirm();B.announce('Subject restrained. Processing clear.');B.say('The arms close over the subject. It thrashes, then goes still.')}
+   else{SFX.deny();B.rt.lure=false;s.mode='roam';s.target=null;B.say('Miss. The restraint cycles on empty air and resets. The lure is cleared; sound the alarm again.')}}});
+  B.subject({id:'sub',tx:20,ty:22,area:[18,4,22,26],speed:60});if(fs.contained){const s=R.subjects[0];const c=tc(20,10);s.x=c.x;s.y=c.y;s.mode='held';s.home={x:c.x,y:c.y}}
+  memoryAt(B,12,'EB','Intake records');
+ },
+ onReset(B){if(B.has('contained')){const s=R.subjects[0];const c=tc(20,10);s.x=c.x;s.y=c.y;s.mode='held'}}
+};
+
+/* ======================= FLOOR 11 · MEDICAL ======================= */
+FLOOR[11]={};
+const LANE_NAMES=['A','B','C'];
+FLOOR[11].e={name:'MEDICAL',
+ objectives:[{id:'o1',label:fs=>fs.diagRead?'Diagnostics: lane '+LANE_NAMES[fs.clearLane]+' stays clear during sterilization':'Read the diagnostics to learn which lane stays clear',done:fs=>fs.diagRead},
+  {id:'o2',label:'Dock the surgical arm',done:fs=>fs.armDocked},{id:'o3',label:'Start sterilization and cross the clear lane',done:fs=>fs.bypassed},{id:'o4',label:'Use the medical scanner bypass',done:fs=>fs.bypassed}],
+ exitReady:fs=>!!fs.bypassed,exitMsg:'The medical scanner holds the lift doors. Use the bypass.',
+ build(B){const fs=B.fs;if(fs.clearLane===undefined){fs.clearLane=Math.floor(rand()*3);saveGame()}
+  for(let y=5;y<=10;y++){B.wall(19,y);B.wall(21,y)}
+  const lanes=[18,20,22];lanes.forEach((x,i)=>{B.door({id:'lane'+i,x,y:10,label:'Lane '+LANE_NAMES[i]+' gate',persist:false,noRobot:true,locked:B=>B.active('steril')?null:'Lane gates open only during a sterilization cycle.'});
+   B.hazard({id:'uv'+i,kind:'uv',tiles:[5,6,7,8,9].map(y=>[x,y]),active:B=>B.active('steril')&&B.fs.clearLane!==i,msg:'Sterilant floods lane '+LANE_NAMES[i]+'. You stumble out, blind and burning, and wake by the lift.'});
+   B.label(x,4,'LANE '+LANE_NAMES[i],'#cfd8dc')});
+  B.door({id:'mscan',x:20,y:3,label:'Medical scanner gate',locked:B=>B.has('bypassed')?null:'BIOMETRIC MISMATCH. The scanner refuses the lift.'});
+  B.hazard({id:'arm',kind:'sweep',tiles:[18,19,20,21,22].map(x=>[x,11]),active:B=>!B.has('armDocked'),msg:'The surgical arm sweeps the corridor and knocks you flat. You come to by the lift.'});
+  B.prop({x:20,y:11,kind:'arm',solid:false,angle:0,len:60});
+  dev(B,{id:'diag',x:8,y:16,label:'Read diagnostics',doneFlag:'diagRead',msg:'Diagnostics: sterilant feeds are saturated on two lanes. Lane '+LANE_NAMES[fs.clearLane]+' reports nominal — it stays clear during a cycle.'});
+  dev(B,{id:'armctl',x:31,y:16,label:'Dock the surgical arm',doneFlag:'armDocked',msg:'The surgical arm folds itself into its dock. The corridor stops moving.'});
+  dev(B,{id:'steril',x:17,y:12,label:'Start sterilization cycle',kind:'panel',timerName:'steril',timerSec:14,requires:['armDocked'],deny:'Interlock: the surgical arm is still deployed.',msg:'Sterilization begins. The lane gates open. Two lanes are flooding.',after:B=>{for(let i=0;i<3;i++){const d=B.doorById('lane'+i);d.open=true}R.dirty=true}});
+  dev(B,{id:'bypass',x:17,y:4,label:'Medical scanner bypass',kind:'panel',doneFlag:'bypassed',msg:'You bypass the biometric scanner. The lift gate unlocks.',announce:'Medical scanner bypassed. Lift 11 available.'});
+  patrol(B,'g1',[[20,24],[20,14]],50);
+  stairLanding(B);B.door({id:'landing',x:2,y:16,label:'Stair landing door',persist:false,open:true});B.item({id:'stairsdn',x:1,y:16,kind:'stairs',label:'Service stairs',prompt:'E: Stairs down to Floor 12',use(B){transitionStairs(12,[1,16])}});
+  if(fs.stairAlert)patrol(B,'g2',[[4,16],[12,16]],55);
+  memoryAt(B,11,'EA','Medical recording');
+ },
+ tick(dt,B){const p=R.props[0];if(p&&!B.has('armDocked'))p.angle+=dt*2.5;if(B.has('armDocked')){p.angle=-Math.PI/2;p.len=20}},
+ onExpire(B,k){if(k==='steril'){for(let i=0;i<3;i++){const d=B.doorById('lane'+i);d.open=false}R.dirty=true;B.say('The sterilization cycle ends. The lane gates close again.')}}
+};
+FLOOR[11].r={name:'MEDICAL',
+ objectives:[{id:'o1',label:'Restore isolation power from the controls outside the room',done:fs=>fs.isoPower},{id:'o2',label:'Lure the subject into isolation',done:fs=>fs.isoSealed},{id:'o3',label:'Seal isolation once it is occupied',done:fs=>fs.isoSealed}],
+ exitReady:fs=>!!fs.isoSealed,exitMsg:'The lower lift stays locked while the subject roams Medical.',
+ build(B){const fs=B.fs;B.label(9,3,'ISOLATION');B.paint(20,6,'blood');B.paint(21,18,'debris');
+  B.door({id:'WA',x:15,y:7,label:'Isolation door',open:false,persist:false,noRobot:true,locked:B=>fs.isoSealed?'Sealed.':'Motorized. Use the outside panel.'});
+  B.hazard({id:'leak',kind:'gas',tiles:[[22,14],[22,15],[21,15],[22,16]],active:()=>true,msg:'A ruptured line vents something caustic. You back out coughing and come to by the lift.'});
+  dev(B,{id:'isopower',x:16,y:8,kind:'panel',label:'Isolation power',doneFlag:'isoPower',msg:'Isolation power comes back. The door motor and the room alarm wake.'});
+  lurePanel(B,{id:'isoctl',x:17,y:6,label:'Isolation control',flag:'isoSealed',door:'WA',room:'WA',roomName:'isolation',target:roomCenter('WA'),requires:['isoPower'],deny:'Dead panel. Restore isolation power first.',lureLabel:'Sound the isolation alarm',lureMsg:'The isolation room alarm sounds and the door opens. The subject turns toward it. Seal the door once it is inside.',sealMsg:'The door seals with the subject inside. Medical is quiet again.',announce:'Isolation sealed.'});
+  B.subject({id:'sub',tx:20,ty:20,area:[18,4,22,26],speed:60});if(fs.isoSealed)heldSubject(B,'WA');
+  memoryAt(B,11,'EA','Medical recording');
+ },
+ tick(dt,B){if(B.rt.lure)occupancyCue(B,'WA')},onReset(B){if(B.has('isoSealed'))heldSubject(B,'WA');else{B.doorById('WA').open=false;B.rt.lure=false}}
+};
+
+/* ======================= FLOOR 10 · RESEARCH ======================= */
+FLOOR[10]={};
+FLOOR[10].e={name:'RESEARCH',
+ objectives:[{id:'o1',label:'Park the lab arm to expose the cognitive station',done:fs=>fs.armParked},{id:'o2',label:'Match the displayed sequence at the cognitive station',done:fs=>fs.synced},{id:'o3',label:'Activate the paired lab terminal while synchronization is available',done:fs=>fs.synced}],
+ exitReady:fs=>!!fs.synced,exitMsg:'The lift waits on laboratory synchronization.',
+ build(B){const fs=B.fs;const arm=B.prop({x:12,y:4,w:1,h:2,kind:'arm',solid:true,angle:Math.PI/2,len:30}),arm2=B.prop({x:13,y:5,kind:'arm',solid:true,angle:0,len:20});if(fs.armParked){for(const a of [arm,arm2]){a.hidden=true;a.solid=false}}
+  dev(B,{id:'armctl',x:4,y:5,label:'Park the lab arm',doneFlag:'armParked',msg:'The lab arm retracts along its rail and parks. The cognitive station is exposed.',after:B=>{for(const a of [arm,arm2]){a.hidden=true;a.solid=false}}});
+  B.item({id:'cog',x:13,y:4,kind:'terminal',solid:true,label:'Cognitive station',prompt:B=>B.has('synced')?'E: Station idle':'E: Begin the visual sequence',use(B){if(B.has('synced')){B.say('The station has nothing more for you.');return}openSequence({len:4,onDone(ok){if(ok){B.timer('sync',18);B.say('Sequence accepted. The paired terminal in the east lab is synchronized for a short window.')}}})}});
+  dev(B,{id:'pair',x:31,y:7,label:'Paired lab terminal',doneFlag:'synced',requires:[B=>B.active('sync')],deny:'“Awaiting synchronization.” The cognitive station must be matched first, and recently.',msg:'Both laboratories synchronize. The lift lock drops.',announce:'Research laboratories synchronized. Lift 10 available.'});
+  patrol(B,'g1',[[20,8],[20,20]],50);memoryAt(B,10,'EC','Trial log');
+ },
+ onExpire(B,k){if(k==='sync')B.say('Synchronization window closed. Match a fresh sequence.')}
+};
+FLOOR[10].r={name:'RESEARCH',
+ objectives:[{id:'o1',label:'Set the ventilation damper to exhaust',done:fs=>fs.vented||fs.sealed},{id:'o2',label:'Wait for the contaminated lane to clear',done:fs=>fs.vented||fs.sealed},{id:'o3',label:'Seal the chamber from the safe side',done:fs=>fs.sealed}],
+ exitReady:fs=>!!fs.sealed,exitMsg:'The lower lift refuses while the east chamber is open and contaminated.',
+ build(B){const fs=B.fs;const tiles=[];for(let y=17;y<=19;y++)for(let x=18;x<=22;x++)tiles.push([x,y]);for(let x=23;x<=25;x++)tiles.push([x,16]);
+  B.hazard({id:'contam',kind:'gas',tiles,active:B=>!B.has('vented')&&!B.has('sealed'),activeTile:(B,x,y)=>{if(B.has('vented')||B.has('sealed'))return false;const pr=B.active('vent')?1-B.left('vent')/10:0;return (x-18)/5>=pr},msg:'The contamination takes you in two breaths. You come to by the lift, lungs raw.'});
+  B.label(24,15,'EAST LAB','#9fd0a0');B.door({id:'EB',x:24,y:16,label:'Chamber door',open:true,persist:false,locked:B=>fs.sealed?'Sealed.':null});
+  dev(B,{id:'damper',x:8,y:16,label:'Ventilation damper → exhaust',timerName:'vent',timerSec:10,requires:[B=>!B.has('vented')],deny:'Already venting.',msg:'The damper swings to exhaust. The haze in the corridor begins to pull east. Wait for it.',kind:'panel'});
+  dev(B,{id:'seal',x:23,y:15,kind:'panel',label:'Seal the chamber',doneFlag:'sealed',requires:['vented'],deny:'The haze is still in the corridor. Vent it before you stand here.',msg:'The chamber door slams and seals. The haze stays on its side.',announce:'East laboratory sealed.',after:B=>{B.doorById('EB').open=false;R.dirty=true}});
+  B.subject({id:'sub',tx:20,ty:24,area:[18,20,22,26],speed:55});memoryAt(B,10,'EC','Trial log');
+ },
+ onExpire(B,k){if(k==='vent'){B.flag('vented');B.timer('respread',25);B.say('The lane is clear. The chamber keeps leaking: seal it before the haze returns.')}if(k==='respread'&&!B.has('sealed')){B.fs.vented=false;saveGame();ui.objectives();B.say('The haze creeps back into the corridor. Vent it again.')}}
+};
+/* hazards with per-tile activity */
+const _hazTileActive=(h,x,y)=>h.activeTile?h.activeTile(B,x,y):h.active(B);
+
+/* ======================= FLOOR 9 · CONTAINMENT ======================= */
+FLOOR[9]={};
+FLOOR[9].e={name:'CONTAINMENT',
+ objectives:[{id:'o1',label:'Open Airlock A and enter the vestibule',done:fs=>fs.redirected||fs.passedB},{id:'o2',label:'Redirect surveillance from the vestibule panel',done:fs=>fs.redirected},{id:'o3',label:'Close A, then cycle Airlock B and leave through the next chamber',done:fs=>fs.passedB}],
+ exitReady:fs=>!!fs.passedB,exitMsg:'Lift interlock: both airlocks must have cycled.',
+ build(B){const fs=B.fs;wallBar(13,18,22,20);wallBar(7,18,22,20);B.label(20,13,'A','#fff');B.label(20,7,'B','#fff');B.label(16,11,'VESTIBULE','#9fb0ba');
+  const A=B.door({id:'A',x:20,y:13,label:'Airlock A',persist:false,noRobot:true,auto:8,locked:'Airlock A cycles from its control panels only.'});
+  const Bd=B.door({id:'B',x:20,y:7,label:'Airlock B',persist:false,noRobot:true,auto:8,locked:'Airlock B cycles from the vestibule panel only.'});
+  B.item({id:'actl',x:17,y:14,kind:'panel',label:'Airlock A control',prompt:'E: Cycle Airlock A',use(B){A.open=true;A.timer=8;R.dirty=true;SFX.door();B.say('Airlock A opens for a few seconds. Get into the vestibule.')}});
+  B.item({id:'aclose',x:17,y:10,kind:'panel',label:'Airlock A inner control',prompt:B=>A.open?'E: Close Airlock A':'E: Reopen Airlock A',use(B){if(A.open){A.open=false;A.timer=0;B.say('Airlock A seals behind you.')}else{A.open=true;A.timer=8;B.say('Airlock A reopens briefly.')}R.dirty=true;SFX.door()}});
+  dev(B,{id:'surv',x:23,y:10,kind:'panel',label:'Redirect surveillance',doneFlag:'redirected',msg:'The vestibule camera turns to watch an empty chamber. It will not report you now.'});
+  B.item({id:'bctl',x:23,y:9,kind:'panel',label:'Airlock B control',prompt:'E: Cycle Airlock B',use(B){if(A.open){B.say('Interlock: Airlock A is open. Close it first.');SFX.deny();return}if(!B.has('redirected')){B.say('Interlock: surveillance flags an unescorted subject. Redirect it first.');SFX.deny();return}Bd.open=true;Bd.timer=8;R.dirty=true;SFX.door();B.say('Airlock B cycles. Go through before it closes.')}});
+  patrol(B,'g1',[[19,4],[21,4]],40);memoryAt(B,9,'WC','Modification protocol');
+ },
+ tick(dt,B){const p=R.player,rt=B.rt;const [tx,ty]=B.tileOf(p);
+  if(ty<7&&tx>=18&&tx<=22&&!B.has('passedB'))B.flag('passedB');
+  if(ty>=8&&ty<=12&&tx>=18&&tx<=22&&!B.has('redirected')){rt.cam=(rt.cam||0)+dt;if(rt.cam>2.5){rt.cam=0;B.announce('Unescorted subject in vestibule. Lockdown.');for(const d of R.doors)if(d.auto){d.open=false;d.timer=0}R.dirty=true;SFX.alarm();B.reset('Vestibule lockdown. Both airlocks slam shut and the chamber flushes you back to the lift.')}}else rt.cam=0;}
+};
+FLOOR[9].r={name:'CONTAINMENT',
+ objectives:[{id:'o1',label:'Sound the chamber alarm',done:fs=>fs.resealed},{id:'o2',label:'Watch for the subject crossing the threshold, then reseal from outside',done:fs=>fs.resealed}],
+ exitReady:fs=>!!fs.resealed,exitMsg:'The lower lift waits for the east chamber to be resealed.',
+ build(B){const fs=B.fs;B.label(31,21,'CHAMBER C','#d4594f');B.paint(24,24,'blood');
+  B.door({id:'EC',x:24,y:24,label:'Chamber door',open:true,persist:false,noRobot:true,locked:B=>fs.resealed?'Resealed.':'Motorized. Use the outside panel.'});
+  lurePanel(B,{id:'cctl',x:23,y:23,label:'Chamber control',flag:'resealed',door:'EC',room:'EC',roomName:'the chamber',target:roomCenter('EC'),lureLabel:'Sound the chamber alarm',lureMsg:'The chamber alarm howls. The subject comes running. Watch the threshold — reseal once it is inside.',sealMsg:'The chamber reseals with the subject inside. Its silhouette hits the glass twice and stops.',announce:'Chamber C resealed.'});
+  B.subject({id:'sub',tx:20,ty:16,area:[18,12,22,26],speed:65});if(fs.resealed)heldSubject(B,'EC');memoryAt(B,9,'WC','Modification protocol');
+ },
+ tick(dt,B){if(B.rt.lure)occupancyCue(B,'EC')},onReset(B){if(B.has('resealed'))heldSubject(B,'EC');else{B.doorById('EC').open=true;B.rt.lure=false}}
+};
+
+/* ======================= FLOOR 8 · ENGINEERING ======================= */
+FLOOR[8]={};
+FLOOR[8].e={name:'ENGINEERING',
+ objectives:[{id:'o1',label:'Start Generator A',done:fs=>fs.genA},{id:'o2',label:'Route its output to the service bus',done:fs=>fs.routed},{id:'o3',label:'Start Generator B to stabilize power',done:fs=>fs.genB}],
+ exitReady:fs=>!!fs.genB,exitMsg:'Lift power is unstable. Bring Generator B online.',
+ build(B){const fs=B.fs;const gA=B.prop({x:5,y:5,w:2,h:2,kind:'generator',on:fs.genA}),gB=B.prop({x:30,y:23,w:2,h:2,kind:'generator',on:fs.genB});
+  dev(B,{id:'genA',x:8,y:7,label:'Start Generator A',doneFlag:'genA',msg:'Generator A coughs and catches. Unrouted, its output arcs across the corridor floor.',after:()=>gA.on=true});
+  B.hazard({id:'arc',kind:'electric',tiles:[[18,18],[19,18],[20,18],[21,18],[18,19],[19,19],[20,19],[21,19],[18,20],[19,20],[20,20],[21,20]], // the east edge stays dry: a readable safe strip, never a trap
+  active:B=>B.has('genA')&&!B.has('routed'),msg:'The floor is live. The shock throws you back; you come to by the lift.'});
+  dev(B,{id:'route',x:17,y:16,side:'e',kind:'panel',label:'Route output to service bus',doneFlag:'routed',requires:['genA'],deny:'No source. Start Generator A first.',msg:'The routing display lights the service bus branch. The corridor floor goes dead; the east door motor wakes.'});
+  B.door({id:'EC',x:24,y:24,label:'Generator room door',open:false,locked:B=>B.has('routed')?null:'Door motor unpowered. Route the service bus.'});
+  dev(B,{id:'genB',x:34,y:25,label:'Start Generator B',doneFlag:'genB',requires:['routed'],deny:'Bus unstable. Route Generator A first.',msg:'Generator B spins up. The power steadies and the lift releases.',announce:'Engineering power stable. Lift 8 released.',after:()=>gB.on=true});
+  patrol(B,'g1',[[20,5],[20,13]],50);memoryAt(B,8,'EA','Power ledger');
+ }
+};
+FLOOR[8].r={name:'ENGINEERING',
+ objectives:[{id:'o1',label:'Divert auxiliary power from the electrified corridor to the robot bay',done:fs=>fs.aux},{id:'o2',label:'Activate the maintenance robot',done:fs=>fs.botSent},{id:'o3',label:'Let the robot isolate the live junction',done:fs=>fs.isolated}],
+ exitReady:fs=>!!fs.isolated,exitMsg:'The corridor is still live between you and the lift.',
+ build(B){const fs=B.fs;const tiles=[];for(let y=15;y<=19;y++)for(let x=18;x<=22;x++)tiles.push([x,y]);
+  B.hazard({id:'live',kind:'electric',tiles,active:B=>!B.has('isolated'),activeTile:(B,x,y)=>!B.has('isolated')&&(!B.has('aux')||y===19),msg:'Live floor. The shock throws you back to the lift.'});
+  B.label(20,14,'LIVE','#ffe066');B.label(31,12,'ROBOT BAY');
+  dev(B,{id:'aux',x:6,y:7,kind:'panel',label:'Divert auxiliary power',doneFlag:'aux',msg:'Auxiliary power leaves the corridor and goes to the robot bay. Only one junction stays live.',announce:'Auxiliary power diverted to robot bay.'});
+  const bot=B.prop({x:30,y:16,kind:'bot',on:fs.aux});if(fs.isolated){bot.x=20;bot.y=19;bot.solid=false}
+  dev(B,{id:'botctl',x:33,y:16,label:'Activate the maintenance robot',doneFlag:'botSent',requires:['aux'],deny:'The bay has no power.',msg:'The maintenance robot rolls out toward the live junction.',after:B=>{B.rt.bot=1;bot.on=true;bot.solid=false}});
+  if(fs.botSent&&!fs.isolated){B.rt.bot=1;bot.solid=false}
+  memoryAt(B,8,'EA','Power ledger');
+ },
+ tick(dt,B){const bot=R.props[0];if(B.rt.bot&&!B.has('isolated')){const tx=20,ty=19;const dx=tx-bot.x,dy=ty-bot.y;if(Math.abs(dx)>.05)bot.x+=Math.sign(dx)*dt*2;else if(Math.abs(dy)>.05)bot.y+=Math.sign(dy)*dt*2;else{bot.x=tx;bot.y=ty;B.flag('isolated');SFX.confirm();B.say('The robot clamps the junction and isolates it. The floor goes dead.')}}}
+};
+
+/* ======================= FLOOR 7 · SECURITY ======================= */
+FLOOR[7]={};
+FLOOR[7].e={name:'SECURITY',
+ objectives:[{id:'o1',label:'Loop the camera feed to expose the drone station',done:fs=>fs.looped},{id:'o2',label:'Dispatch the drone to a decoy waypoint',done:fs=>fs.lockdownOff},{id:'o3',label:'Cancel lockdown at the lobby override while the drone is away',done:fs=>fs.lockdownOff}],
+ exitReady:fs=>!!fs.lockdownOff,exitMsg:'Elevator lockdown is active.',
+ build(B){const fs=B.fs;dev(B,{id:'relay',x:6,y:7,label:'Loop the camera feed',doneFlag:'looped',msg:'The relay replays an empty corridor to itself. The drone station door no longer sees you.'});
+  B.door({id:'EA',x:24,y:7,label:'Drone station door',open:false,locked:B=>B.has('looped')?null:'CAMERA LOCK — the door will not open while the corridor feed is live.'});
+  const drone=B.guard({id:'drone',kind:'drone',tx:20,ty:4,route:[[19,4],[21,4]],speed:45,vision:140,label:'DRONE'});
+  dev(B,{id:'dronectl',x:31,y:7,label:'Dispatch the drone to the west decoy waypoint',timerName:'away',timerSec:16,msg:'The drone banks away toward the west wing. The lobby is open for a few seconds.',after:B=>{drone.mode='script';drone.path=null;drone.script=(g,dt)=>{if(B.active('away')){moveEntity(g,8,24,110,dt)}else{if(moveEntity(g,20,4,110,dt)){g.mode='patrol';g.path=null}}}}});
+  dev(B,{id:'override',x:18,y:3,kind:'panel',label:'Cancel lockdown',doneFlag:'lockdownOff',requires:[B=>B.active('away')],deny:'The drone covers the lobby. It has to be elsewhere.',msg:'Lockdown cancelled. The lift answers.',announce:'Elevator lockdown cancelled, Floor 7.'});
+  patrol(B,'g1',[[20,22],[20,12]],55);memoryAt(B,7,'EC','Security footage');
+ },
+ onExpire(B,k){if(k==='away')B.say('The drone turns back toward the lobby.')}
+};
+FLOOR[7].r={name:'SECURITY',
+ objectives:[{id:'o1',label:'Trigger a false incident in the empty west wing',done:fs=>fs.evac},{id:'o2',label:'Invoke the evacuation protocol at the lift override during the handoff',done:fs=>fs.evac}],
+ exitReady:fs=>!!fs.evac,exitMsg:'Lift authorization is held by security protocol.',
+ build(B){const fs=B.fs;const g1=patrol(B,'g1',[[20,16],[20,25]],60),g2=patrol(B,'g2',[[20,24],[20,14]],60);
+  dev(B,{id:'incident',x:8,y:16,label:'Report a false incident (west wing)',timerName:'handoff',timerSec:14,msg:'“Incident, west wing.” Control hands the floor to the response units. They are coming here; the lift override is yours for a moment.',after:B=>{for(const g of [g1,g2]){g.mode='script';g.path=null;g.script=(g,dt)=>{if(B.active('handoff'))moveEntity(g,8,16,120,dt);else{const wp=g.route[0];if(moveEntity(g,wp[0],wp[1],100,dt)){g.mode='patrol';g.path=null}}}}}});
+  dev(B,{id:'evac',x:18,y:26,kind:'panel',label:'Invoke evacuation protocol',doneFlag:'evac',requires:[B=>B.active('handoff')],deny:'“Authorization held by security protocol.” It needs a handoff in progress.',msg:'Evacuation protocol invoked. The lower lift unlocks.',announce:'Evacuation protocol active. Lift 7 released.'});
+  memoryAt(B,7,'EC','Security footage');
+ },
+ onExpire(B,k){if(k==='handoff')B.say('Control takes the floor back. The units return to their sweep.')}
+};
+
+/* ======================= FLOOR 6 · RECORDS ======================= */
+FLOOR[6]={};
+FLOOR[6].e={name:'RECORDS',
+ objectives:[{id:'o1',label:fs=>fs.codeA?'Code A: '+fs.codeA:'Retrieve code A (west archive)',done:fs=>!!fs.codeA},{id:'o2',label:fs=>fs.codeB?'Code B: '+fs.codeB:'Retrieve code B (east archive)',done:fs=>!!fs.codeB},{id:'o3',label:'Combine the codes (A then B) at the archive index',done:fs=>fs.indexed}],
+ exitReady:fs=>!!fs.indexed,exitMsg:'The lift requires archive index clearance.',
+ build(B){const fs=B.fs;const code=()=>String(10+Math.floor(rand()*90));
+  dev(B,{id:'ca',x:6,y:7,label:'Retrieve code A',doneFlag:'hasA',msg:'',use(B){if(!fs.codeA){fs.codeA=code()}B.flag('hasA');B.say('The terminal prints half a clearance: A = '+fs.codeA+'.');SFX.confirm()}});
+  dev(B,{id:'cb',x:31,y:7,label:'Retrieve code B',doneFlag:'hasB',use(B){if(!fs.codeB){fs.codeB=code()}B.flag('hasB');B.say('The second half: B = '+fs.codeB+'.');SFX.confirm()}});
+  B.item({id:'index',x:8,y:16,kind:'terminal',solid:true,label:'Archive index',prompt:B=>B.has('indexed')?'E: Index cleared':'E: Enter the combined code',use(B){if(B.has('indexed')){B.say('Clearance stands.');return}openKeypad({len:4,title:'ARCHIVE INDEX',hint:'Four digits: code A followed by code B.',onSubmit(d){if(fs.codeA&&fs.codeB&&d===fs.codeA+fs.codeB){B.flag('indexed');SFX.confirm();B.say('The index accepts the combined code. Lift access granted.');return {close:true}}SFX.deny();return {msg:'Rejected. The index wants A then B.'}}})}});
+  patrol(B,'g1',[[20,5],[20,12]],50);patrol(B,'g2',[[20,24],[20,16]],50);memoryAt(B,6,'WC','A photograph');
+ }
+};
+FLOOR[6].r={name:'RECORDS',
+ objectives:[{id:'o1',label:'Use the retrieval robot to pull the collapsed shelf into the empty bay',done:fs=>fs.cleared},{id:'o2',label:'Restore the exposed lift control',done:fs=>fs.liftRestored}],
+ exitReady:fs=>!!fs.liftRestored,exitMsg:'The lift control was buried. Clear it and restore it.',
+ build(B){const fs=B.fs;const shelf=B.prop({x:18,y:20,w:5,h:1,kind:'shelf'});if(fs.cleared){shelf.hidden=true;shelf.solid=false}
+  dev(B,{id:'retr',x:31,y:16,label:'Operate the retrieval robot',doneFlag:'robotSent',msg:'The retrieval robot locks onto the collapsed shelf and starts dragging it toward the east bay.',after:B=>{B.timer('pull',5)}});
+  if(fs.robotSent&&!fs.cleared)B.timer('pull',5);
+  B.item({id:'liftctl',x:19,y:25,kind:'panel',label:'Lift control',visible:()=>B.has('cleared'),prompt:B=>B.has('liftRestored')?'E: Restored':'E: Restore the lift control',use(B){if(B.has('liftRestored'))return;B.flag('liftRestored');SFX.confirm();B.say('The control under the shelving still works. The lower lift answers.')}});
+  memoryAt(B,6,'WC','A photograph');
+ },
+ tick(dt,B){const shelf=R.props[0];if(B.active('pull')){shelf.x=18+(1-B.left('pull')/5)*9}},
+ onExpire(B,k){if(k==='pull'){const shelf=R.props[0];shelf.hidden=true;shelf.solid=false;B.flag('cleared');B.say('The shelf is in the bay. The corridor is clear, and a lift control is exposed where it lay.')}}
+};
+
+/* ======================= FLOOR 5 · OPERATIONS ======================= */
+FLOOR[5]={};
+FLOOR[5].e={name:'OPERATIONS',
+ objectives:[{id:'o1',label:'Issue timed maintenance authorization',done:fs=>fs.released},{id:'o2',label:'Reach the command terminal and use it before expiry',done:fs=>fs.released}],
+ exitReady:fs=>!!fs.released,exitMsg:'Elevator lockout stands until the command terminal releases it.',
+ build(B){dev(B,{id:'auth',x:8,y:16,label:'Issue maintenance authorization (timed)',timerName:'auth',timerSec:16,msg:'Maintenance authorization issued. The command room will accept you until it expires.'});
+  B.door({id:'EA',x:24,y:7,label:'Command room door',open:false,persist:false,locked:B=>B.active('auth')?null:'“Authorization required.” Issue maintenance authorization first.'});
+  dev(B,{id:'cmd',x:31,y:7,label:'Command terminal: release the elevator',doneFlag:'released',requires:[B=>B.active('auth')],deny:'“Authorization expired.” Issue it again.',msg:'The command terminal releases the elevator for good.',announce:'Elevator lockout lifted, Floor 5.'});
+  patrol(B,'g1',[[20,4],[20,12]],50);patrol(B,'g2',[[20,24],[20,16]],55);memoryAt(B,5,'EC','Directive 7-C');
+ },
+ onExpire(B,k){if(k==='auth'){const d=B.doorById('EA');if(d.open&&!B.inRoom(R.player,[26,36,4,10])){d.open=false;R.dirty=true}B.say('Maintenance authorization expired.')}}
+};
+FLOOR[5].r={name:'OPERATIONS',
+ objectives:[{id:'o1',label:'Cancel emergency lockdown at the command console',done:fs=>fs.lockdownOff},{id:'o2',label:'Issue an evacuation command from the backup panel',done:fs=>fs.evac}],
+ exitReady:fs=>!!fs.evac,exitMsg:'The lower lift waits for an evacuation command.',
+ build(B){B.hazard({id:'sparks',kind:'electric',tiles:[[19,14],[20,14],[21,21],[22,21]],active:()=>true,msg:'A fallen cable bites. You come to by the lift.'});
+  dev(B,{id:'cmd',x:31,y:7,label:'Cancel emergency lockdown',doneFlag:'lockdownOff',msg:'Emergency lockdown cancelled. The backup room unlocks.',announce:'Emergency lockdown cancelled.'});
+  B.door({id:'EC',x:24,y:24,label:'Backup room door',open:false,locked:B=>B.has('lockdownOff')?null:'LOCKDOWN. Cancel it at the command console.'});
+  dev(B,{id:'backup',x:31,y:24,label:'Issue evacuation command',doneFlag:'evac',requires:['lockdownOff'],deny:'Backup panel offline under lockdown.',msg:'Evacuation command issued. The lower lift restores.',announce:'Evacuation command accepted.'});
+  B.subject({id:'sub',tx:20,ty:18,area:[18,10,22,26],speed:55});memoryAt(B,5,'EC','Directive 7-C');
+ }
+};
+
+/* ======================= FLOOR 4 · TRAINING ======================= */
+FLOOR[4]={};
+function markArea(B,cx,cy){for(let y=cy-1;y<=cy+1;y++)for(let x=cx-1;x<=cx+1;x++)B.paint(x,y,'mark')}
+FLOOR[4].e={name:'TRAINING',
+ objectives:[{id:'o1',label:'Enable the simulator',done:fs=>fs.simOn},{id:'o2',label:'Place a decoy in the marked area (south-west)',done:fs=>fs.liftReleased},{id:'o3',label:'Use the wardens’ diverted patrol to reach the lift release',done:fs=>fs.liftReleased}],
+ exitReady:fs=>!!fs.liftReleased,exitMsg:'The lift release in the lobby has not been used.',
+ build(B){const fs=B.fs,rt=B.rt;markArea(B,8,24);B.label(8,21,'SIM AREA','#e7c45c');
+  dev(B,{id:'sim',x:6,y:7,label:'Enable the simulator',doneFlag:'simOn',msg:'The simulator hums awake. Anything placed in the marked area will read as an intruder.'});
+  const decoy=B.prop({x:10,y:8,kind:'decoy',solid:false});
+  B.item({id:'pick',x:10,y:8,kind:'decoy',label:'Decoy',visible:()=>!rt.carrying&&!rt.placed,prompt:'E: Pick up the decoy',use(B){rt.carrying=true;decoy.hidden=true;B.say('You lift the training decoy. It is lighter than a person.')}});
+  B.item({id:'place',x:8,y:24,kind:'spot',label:'Marked area',visible:()=>!!rt.carrying,prompt:'E: Place the decoy here',use(B){if(!B.has('simOn')){B.say('The simulator is off. A decoy here is just a mannequin.');SFX.deny();return}rt.carrying=false;rt.placed=true;decoy.hidden=false;decoy.x=8;decoy.y=24;B.timer('divert',20);SFX.alarm();B.announce('Simulated intruder, training area. Wardens responding.');B.say('The wardens turn toward the training room. The lobby is yours while they are busy.');for(const g of R.guards){g.mode='script';g.path=null;g.script=(g,dt)=>{if(B.active('divert'))moveEntity(g,g.id==='w1'?7:9,24,110,dt);else{if(moveEntity(g,g.route[0][0],g.route[0][1],100,dt)){g.mode='patrol';g.path=null}}}}}});
+  patrol(B,'w1',[[20,4],[20,10]],55);patrol(B,'w2',[[19,12],[21,6]],55);
+  dev(B,{id:'release',x:18,y:3,kind:'panel',label:'Lift release',doneFlag:'liftReleased',msg:'Lift released.',announce:'Lift 4 released.'});
+  memoryAt(B,4,'WC','Warden slides');
+ },
+ onExpire(B,k){if(k==='divert'){const rt=B.rt;rt.placed=false;R.props[0].hidden=true;R.props[0].x=10;R.props[0].y=8;R.props[0].hidden=false;B.say('A warden kicks the decoy over and the simulation clears. The decoy is back in the simulator room.')}},
+ onReset(B){const rt=B.rt;rt.carrying=false;rt.placed=false;R.props[0].hidden=false;R.props[0].x=10;R.props[0].y=8}
+};
+FLOOR[4].r={name:'TRAINING',
+ objectives:[{id:'o1',label:'Use the decoy to draw the malfunctioning robots into the training room',done:fs=>fs.sealed},{id:'o2',label:'Seal the training room from outside once both are inside',done:fs=>fs.sealed}],
+ exitReady:fs=>!!fs.sealed,exitMsg:'Two malfunctioning units still roam. The lower lift waits.',
+ build(B){const fs=B.fs,rt=B.rt;markArea(B,8,24);B.label(8,21,'TRAINING','#e7c45c');
+  const decoy=B.prop({x:31,y:7,kind:'decoy',solid:false});
+  B.item({id:'pick',x:31,y:7,kind:'decoy',label:'Decoy',visible:()=>!rt.carrying&&!rt.placed&&!fs.sealed,prompt:'E: Pick up the decoy',use(B){rt.carrying=true;decoy.hidden=true;B.say('You take the decoy.')}});
+  B.item({id:'place',x:8,y:24,kind:'spot',label:'Marked area',visible:()=>!!rt.carrying,prompt:'E: Place the decoy',use(B){rt.carrying=false;rt.placed=true;decoy.hidden=false;decoy.x=8;decoy.y=24;B.timer('draw',10);SFX.alarm();B.say('The decoy starts broadcasting. Both units lurch toward the training room. Seal it from the outside panel once they are in.');for(const g of R.guards){if(!g.active)continue;g.mode='script';g.path=null;g.script=(g,dt)=>{if(B.active('draw'))moveEntity(g,g.id==='m1'?7:9,24,120,dt);else{if(moveEntity(g,g.route[0][0],g.route[0][1],100,dt)){g.mode='patrol';g.path=null}}}}}});
+  const m1=patrol(B,'m1',[[20,14],[20,26]],70),m2=patrol(B,'m2',[[20,24],[20,12]],70);m1.fov=Math.PI/2;m2.fov=Math.PI/2;
+  if(fs.sealed){for(const g of [m1,m2]){g.active=false}}
+  B.door({id:'WC',x:15,y:24,label:'Training room door',open:true,persist:false,noRobot:true,locked:B=>fs.sealed?'Sealed.':null});
+  B.item({id:'seal',x:16,y:23,kind:'panel',label:'Training room seal',prompt:B=>fs.sealed?'E: Sealed':'E: Seal the training room',use(B){if(fs.sealed)return;const inside=R.guards.filter(g=>g.active&&B.inRoom(g,[3,13,22,26]));if(inside.length>=2){const d=B.doorById('WC');d.open=false;R.dirty=true;SFX.door();for(const g of R.guards)g.active=false;B.flag('sealed');SFX.confirm();B.announce('Training room sealed. Units contained.');B.say('The door drops and both units beat on it from the inside. They are not getting out.')}else{B.say(inside.length?'Only one unit is inside. Wait for both.':'Nothing is inside yet.');SFX.deny()}}});
+  memoryAt(B,4,'WC','Warden slides');
+ },
+ onExpire(B,k){if(k==='draw'){B.rt.placed=false;R.props[0].x=31;R.props[0].y=7;B.say('The units lose interest and wander out. The decoy has been knocked back to the east office.')}},
+ onReset(B){const rt=B.rt;rt.carrying=false;rt.placed=false;R.props[0].hidden=false;R.props[0].x=31;R.props[0].y=7}
+};
+
+/* ======================= FLOOR 3 · LOGISTICS ======================= */
+FLOOR[3]={};
+FLOOR[3].e={name:'LOGISTICS',
+ objectives:[{id:'o1',label:'Use the forklift control to clear the conveyor loading area',done:fs=>fs.loadingCleared},{id:'o2',label:'Run the conveyor to move the cargo off the lane',done:fs=>fs.conveyed}],
+ exitReady:fs=>!!fs.conveyed,exitMsg:'Cargo still blocks the lift lane.',
+ build(B){const fs=B.fs;const crates=[18,19,20,21,22].map(x=>B.prop({x,y:8,kind:'crate'}));if(fs.loadingCleared){crates[0].hidden=crates[1].hidden=true;crates[0].solid=crates[1].solid=false}if(fs.conveyed)crates.forEach(c=>{c.hidden=true;c.solid=false});
+  for(let x=18;x<=22;x++)B.paint(x,8,'arrow');B.label(20,7,'CONVEYOR','#e7c45c');B.prop({x:30,y:16,w:2,h:1,kind:'forklift'});
+  dev(B,{id:'fork',x:33,y:16,label:'Forklift control: clear the loading area',doneFlag:'loadingCleared',msg:'The forklift lifts two pallets off the loading end of the belt and backs away.',after:()=>{crates[0].hidden=crates[1].hidden=true;crates[0].solid=crates[1].solid=false}});
+  dev(B,{id:'conv',x:8,y:16,label:'Run the conveyor',doneFlag:'conveying',requires:['loadingCleared'],deny:'“Loading area obstructed.” Clear it with the forklift first.',msg:'The belt starts. The cargo slides east off the lane.',after:B=>B.timer('belt',4)});
+  if(fs.conveying&&!fs.conveyed)B.timer('belt',4);
+  B.hazard({id:'belt',kind:'push',tiles:[[20,8],[21,8],[22,8]],active:B=>B.active('belt'),dx:2});
+  patrol(B,'g1',[[20,12],[20,24]],55);memoryAt(B,3,'WB','Shipment manifest');
+ },
+ tick(dt,B){if(B.active('belt')){const k=1-B.left('belt')/4;for(let i=2;i<5;i++)R.props[i].x=18+i+k*4}},
+ onExpire(B,k){if(k==='belt'){for(const c of R.props.slice(0,5)){c.hidden=true;c.solid=false}B.flag('conveyed');B.say('The cargo is off the lane. The lift path is clear.')}}
+};
+FLOOR[3].r={name:'LOGISTICS',
+ objectives:[{id:'o1',label:'Restart the damaged conveyor to move debris off the access lane',done:fs=>fs.debrisCleared},{id:'o2',label:'Cross while the belt is stopped, or stop it from the side control',done:fs=>fs.crossed}],
+ exitReady:fs=>!!fs.debrisCleared,exitMsg:'Debris still covers the access lane.',
+ build(B){const fs=B.fs;const debris=[18,19,20,21,22].map(x=>B.prop({x,y:20,kind:'rubble'}));if(fs.debrisCleared)debris.forEach(d=>{d.hidden=true;d.solid=false});
+  for(let x=18;x<=22;x++){B.paint(x,20,'arrow');B.paint(x,21,'arrow')}B.label(23,20,'BELT','#e7c45c');
+  dev(B,{id:'restart',x:8,y:16,label:'Restart the damaged conveyor',doneFlag:'restarted',msg:'The belt shudders alive and starts dragging the debris east. It will keep cycling: moving, then stopped.',after:B=>B.timer('clear',4)});
+  if(fs.restarted&&!fs.debrisCleared)B.timer('clear',4);
+  B.hazard({id:'belt',kind:'push',tiles:[18,19,20,21,22].flatMap(x=>[[x,20],[x,21]]),active:B=>B.has('debrisCleared')&&!B.has('beltStopped')&&B.rt.beltOn,dx:3,msg:''});
+  dev(B,{id:'stop',x:23,y:19,kind:'panel',label:'Belt stop control',doneFlag:'beltStopped',msg:'The belt stops for good.'});
+  B.subject({id:'sub',tx:20,ty:24,area:[18,22,22,26],speed:50});memoryAt(B,3,'WB','Shipment manifest');
+ },
+ tick(dt,B){const rt=B.rt;if(B.active('clear')){const k=1-B.left('clear')/4;R.props.slice(0,5).forEach((d,i)=>d.x=18+i+k*6)}
+  if(B.has('debrisCleared')&&!B.has('beltStopped')){rt.cycle=(rt.cycle||0)+dt;rt.beltOn=(rt.cycle%7)<4}else rt.beltOn=false;
+  const [tx,ty]=B.tileOf(R.player);if(ty>=22&&tx>=18&&tx<=22&&!B.has('crossed'))B.flag('crossed');
+  if(rt.beltOn&&ty>=20&&ty<=21&&tx>=18&&tx<=22&&R.player.x>22.6*T){SFX.shock();B.reset('The moving belt carries you into the end wall. You come to by the lift.')}},
+ onExpire(B,k){if(k==='clear'){for(const d of R.props.slice(0,5)){d.hidden=true;d.solid=false}B.flag('debrisCleared');B.say('The debris is off the lane. The belt keeps running in cycles: cross while it is stopped, or stop it from the side panel.')}}
+};
+
+/* ======================= FLOOR 2 · ADMINISTRATION ======================= */
+FLOOR[2]={};
+FLOOR[2].e={name:'ADMINISTRATION',
+ objectives:[{id:'o1',label:'Assign maintenance clearance at the badge station',done:fs=>fs.badge},{id:'o2',label:'Use the badge at the executive terminal to authorize the upper elevator',done:fs=>fs.authorized}],
+ exitReady:fs=>!!fs.authorized,exitMsg:'The upper elevator needs executive authorization.',
+ build(B){dev(B,{id:'badge',x:8,y:16,label:'Assign maintenance clearance',doneFlag:'badge',msg:'The badge station prints a maintenance badge. The executive wing will read it.'});
+  B.door({id:'EA',x:24,y:7,label:'Executive wing door',open:false,locked:B=>B.has('badge')?null:'“Badge required.”'});
+  dev(B,{id:'exec',x:31,y:7,label:'Executive terminal: authorize the upper elevator',doneFlag:'authorized',requires:['badge'],deny:'“Badge required.”',msg:'The executive terminal authorizes the upper elevator.',announce:'Upper elevator authorized, Floor 2.'});
+  patrol(B,'g1',[[20,5],[20,13]],55);patrol(B,'g2',[[20,25],[20,15]],55);memoryAt(B,2,'EC','Signed authorization');
+ }
+};
+FLOOR[2].r={name:'ADMINISTRATION',
+ objectives:[{id:'o1',label:'Retrieve the emergency token from the accessible office',done:fs=>fs.token},{id:'o2',label:'Use it at the manual override outside the locked route',done:fs=>fs.override}],
+ exitReady:fs=>!!fs.override,exitMsg:'The lockdown shutter blocks the lift.',
+ build(B){const fs=B.fs;wallBar(20,18,22,20);B.door({id:'shutter',x:20,y:20,kind:'gate',label:'Lockdown shutter',persist:false,locked:B=>fs.override?null:'LOCKDOWN. Manual override only.'});
+  if(fs.override)B.doorById('shutter').open=true;
+  B.item({id:'token',x:31,y:7,kind:'token',label:'Emergency token',visible:()=>!B.has('token'),prompt:'E: Take the emergency token',use(B){B.flag('token');SFX.confirm();B.say('A physical override token, still in its case. Somebody expected this day.')}});
+  dev(B,{id:'ovr',x:23,y:19,kind:'panel',label:'Manual override',doneFlag:'override',requires:['token'],deny:'The override wants a physical token.',msg:'The token turns. The shutter grinds up.',after:B=>{B.doorById('shutter').open=true;R.dirty=true;SFX.gate()}});
+  B.subject({id:'sub',tx:20,ty:12,area:[18,4,22,19],speed:55});memoryAt(B,2,'EC','Signed authorization');
+ }
+};
+
+/* ======================= FLOOR 1 · SURFACE ACCESS ======================= */
+FLOOR[1]={};
+function exterior(B){for(let y=0;y<=2;y++)for(let x=16;x<=30;x++)B.floor(x,y,'grass');B.floor(20,2,'concrete');B.label(20,0,'OUTSIDE','#dfe9c8')}
+FLOOR[1].e={name:'SURFACE ACCESS',noExitTile:true,exitLabel:'Walk out through the exterior gate',
+ objectives:[{id:'o1',label:'Disable perimeter surveillance',done:fs=>fs.survOff},{id:'o2',label:'Open the exterior gate',done:fs=>fs.gateOpen},{id:'o3',label:'Walk outdoors',done:fs=>false}],
+ exitReady:fs=>!!fs.gateOpen,
+ build(B){const fs=B.fs;exterior(B);B.door({id:'gate',x:20,y:3,kind:'gate',label:'Exterior gate',persist:true,locked:B=>fs.gateOpen?null:'The gate is sealed from the control room.'});
+  dev(B,{id:'surv',x:31,y:7,label:'Disable perimeter surveillance',doneFlag:'survOff',msg:'The perimeter cameras drop one by one.'});
+  dev(B,{id:'gatectl',x:8,y:16,label:'Open the exterior gate',doneFlag:'gateOpen',requires:['survOff'],deny:'“PERIMETER ALARM.” The cameras saw the gate command.',onDeny:B=>{SFX.alarm();B.announce('Perimeter alarm. Subject at surface access.');B.reset('The alarm brings the wardens. You are held and returned to the lift.')},msg:'The exterior gate unlocks. Daylight, somewhere above.',after:B=>{B.openDoor('gate')}});
+  B.item({id:'threshold',x:19,y:0,w:3,h:2,kind:'threshold',label:'Threshold',prompt:()=>null,use(){}});
+  patrol(B,'g1',[[20,6],[20,14]],55);patrol(B,'g2',[[20,24],[20,16]],55);memoryAt(B,1,'WB','A life outside');
+ },
+ tick(dt,B){const [tx,ty]=B.tileOf(R.player);if(ty<=1&&tx>=19&&tx<=21&&!B.rt.out){B.rt.out=true;Scenes.play('daylight')}}
+};
+FLOOR[1].r={name:'SURFACE ACCESS',
+ objectives:[{id:'o1',label:'Enter the damaged vehicle bay',done:fs=>fs.bypassed},{id:'o2',label:'Bypass perimeter controls at the manual panel',done:fs=>fs.bypassed},{id:'o3',label:'Restore lower-lift power',done:fs=>fs.liftPower}],
+ exitReady:fs=>!!fs.liftPower,exitMsg:'The lower lift has no power.',
+ spawn(){return [20,1]},checkpoint(){return tc(20,1)},
+ build(B){const fs=B.fs;exterior(B);B.floor(30,3,'concrete');B.label(30,2,'BAY','#dfe9c8');
+  B.door({id:'gate',x:20,y:3,kind:'gate',label:'Exterior gate',persist:false,locked:'Jammed. The gate dropped when the alarms began.'});
+  B.prop({x:27,y:5,w:3,h:2,kind:'vehicle'});B.prop({x:32,y:8,w:2,h:1,kind:'rubble'});
+  B.door({id:'EA',x:24,y:7,label:'Vehicle bay door',open:false,persist:false,locked:B=>fs.bypassed?null:'PERIMETER LOCK.'});
+  dev(B,{id:'manual',x:28,y:9,kind:'panel',label:'Manual perimeter panel',doneFlag:'bypassed',msg:'You bypass the perimeter controls by hand. The bay door unlocks.',after:B=>{B.doorById('EA').open=true;R.dirty=true}});
+  dev(B,{id:'liftpower',x:8,y:24,label:'Restore lower-lift power',doneFlag:'liftPower',msg:'Lift power comes back with a groan. The way down is open.',announce:'Lift 1 power restored. Descent available.'});
+  B.hazard({id:'sparks',kind:'electric',tiles:[[19,15],[21,21]],active:()=>true,msg:'A fallen cable bites. You come to at the threshold.'});
+  B.subject({id:'sub',tx:20,ty:20,area:[18,10,22,26],speed:50});memoryAt(B,1,'WB','A life outside');
+ }
+};
+
+/* --- 40_scenes.js --- */
+/* ============================================================
+   SCENES · awakening, escort, captive, daylight, reentry, reunion, endings
+   ============================================================ */
+const SC={
+ room(g,t,flicker){ // assessment room, overhead, muted
+  const f=flicker&&!OPT.reduced?(Math.sin(t*23)>.6?.55:1):1;
+  g.fillStyle=`rgba(40,52,62,${f})`;g.fillRect(120,70,400,260);g.fillStyle=`rgba(25,33,40,${f})`;g.fillRect(120,70,400,14);g.fillRect(120,70,14,260);g.fillRect(506,70,14,260);g.fillRect(120,316,400,14);
+  g.fillStyle='#7d8b94';g.fillRect(250,170,140,60);g.fillStyle='#b8c4cc';g.fillRect(256,176,128,48);
+  g.fillStyle='#8e969c';g.fillRect(270,186,100,26);g.fillStyle='#e2b89a';g.fillRect(250,188,22,22);
+  g.fillStyle='#2b3238';g.fillRect(480,84,24,16);g.fillStyle=Math.sin(t*2)>0?'#e04848':'#a03030';g.fillRect(488,89,8,6);
+  g.fillStyle='#55606a';g.fillRect(300,312,40,18);
+ },
+ forearm(g,t){g.fillStyle='#e2b89a';g.fillRect(200,200,240,70);g.fillStyle='#d8cfc4';g.fillRect(300,196,70,78);g.fillStyle='#8a2f2f';g.font='bold 42px monospace';g.textAlign='center';g.fillStyle=`rgba(80,20,20,${Math.min(1,t/1.5)})`;g.fillText('13',335,246);g.textAlign='left'},
+ corridor(g,t,ret){ // side-scroll corridor, figures walking right
+  g.fillStyle=ret?'#1a1416':'#1c252c';g.fillRect(0,0,VW,VH);g.fillStyle=ret?'#2a2124':'#2d3a44';g.fillRect(0,300,VW,100);g.fillStyle=ret?'#3a2f33':'#3b4a58';g.fillRect(0,120,VW,180);
+  const off=(t*60)%160;for(let i=-1;i<6;i++){const x=i*160-off+40;g.fillStyle='#52606a';g.fillRect(x,150,70,150);g.fillStyle='#1d2429';g.fillRect(x+30,210,10,10);g.fillStyle=ret&&i%2?'#333':'#e04848';g.fillRect(x+10,160,6,6)}
+  if(ret){g.fillStyle='rgba(200,60,60,'+(0.15+0.1*Math.sin(t*6))+')';g.fillRect(0,0,VW,VH)}
+ },
+ robot(g,x,y,t){const w=Math.sin(t*8)*4;g.fillStyle='#8d99a3';g.fillRect(x-18,y-60,36,50);g.fillStyle='#b3bec6';g.fillRect(x-14,y-84,28,24);g.fillStyle='#e04848';g.fillRect(x-10,y-76,20,5);g.fillStyle='#5f6b74';g.fillRect(x-16,y-10,12,10+w);g.fillRect(x+4,y-10,12,10-w);g.fillRect(x-26,y-56,8,30);g.fillRect(x+18,y-56,8,30)},
+ person(g,x,y,t,female,cloth='#8e969c'){const w=Math.sin(t*8)*4;g.fillStyle=cloth;g.fillRect(x-12,y-54,24,40);g.fillStyle='#e2b89a';g.fillRect(x-9,y-74,18,20);g.fillStyle=female?'#5a3b2a':'#2b2b2b';g.fillRect(x-10,y-77,20,7);if(female)g.fillRect(x-11,y-74,4,16);g.fillStyle='#4d5358';g.fillRect(x-10,y-14,8,14+w);g.fillRect(x+2,y-14,8,14-w)},
+ sky(g,t,dawn){const gr=g.createLinearGradient(0,0,0,VH);gr.addColorStop(0,dawn?'#2b3e63':'#0b0f18');gr.addColorStop(.6,dawn?'#d98a5a':'#1b2230');gr.addColorStop(1,dawn?'#f2c27c':'#2d3a44');g.fillStyle=gr;g.fillRect(0,0,VW,VH);
+  if(dawn){g.fillStyle='#ffe9b0';g.beginPath();g.arc(320,300-Math.min(60,t*8),40,0,Math.PI*2);g.fill()}
+  g.fillStyle='#101a14';for(let i=0;i<14;i++){const x=i*50-20;g.fillRect(x,260,18,120);g.beginPath();g.moveTo(x-18,270);g.lineTo(x+9,180);g.lineTo(x+36,270);g.fill()}g.fillRect(0,330,VW,150)},
+ gate(g,open){g.fillStyle='#3b4a58';g.fillRect(200,150,240,200);g.fillStyle='#8b7355';g.fillRect(230,180,open?60:180,170);if(open){g.fillStyle='#0b0f18';g.fillRect(290,180,120,170)}},
+ window(g,t){g.fillStyle='#1c252c';g.fillRect(0,0,VW,VH);g.fillStyle='#2f3339';g.fillRect(140,80,360,240);g.fillStyle='rgba(140,190,210,.22)';g.fillRect(140,80,360,240);g.fillStyle='rgba(255,255,255,.35)';g.fillRect(150,90,8,220);
+  g.fillStyle='#4e5a63';g.fillRect(220,230,200,30);g.fillStyle='#8e969c';g.fillRect(240,218,150,22);g.fillStyle='#e2b89a';g.fillRect(222,214,26,26);g.fillStyle=G.gender==='female'?'#2b2b2b':'#5a3b2a';g.fillRect(220,210,30,8);g.fillStyle='#8a2f2f';g.fillRect(330,222,40,10);
+  if(Math.sin(t*1.5)>.8){g.fillStyle='#fff';g.fillRect(228,222,3,3);g.fillRect(238,222,3,3)}},
+ kids(g,t){g.fillStyle='#f2d9a6';g.fillRect(0,0,VW,VH);g.fillStyle='#c98f5a';g.fillRect(0,330,VW,150);g.fillStyle='#7d8b94';g.fillRect(0,300,VW,14);
+  g.fillStyle='#6a7278';g.fillRect(300,100,40,230);SC.person(g,200,330,t*.3,true,'#d86a6a');SC.person(g,440,330,t*.3+2,false,'#6a8ad8');
+  const tap=Math.floor(t*3)%8;g.fillStyle='#fff';if([0,1,2,5,6].includes(tap)){g.fillRect(270,220+(tap%2)*10,10,10)}},
+ blackout(g,a){g.fillStyle=`rgba(0,0,0,${a})`;g.fillRect(0,0,VW,VH)},
+ vignette(g,t,i){ // montage vignettes: childhood, laughter, arguments, separation, reunion, shared years
+  const warm=['#f2d9a6','#ffe7c2','#d9c9b8','#8b96a3','#f2c27c','#e8d8c0'][i];g.fillStyle=warm;g.fillRect(0,0,VW,VH);g.fillStyle='rgba(90,70,50,.5)';g.fillRect(0,320,VW,160);
+  const f=G.gender==='female',a=f?'#d86a6a':'#6a8ad8',b=f?'#6a8ad8':'#d86a6a';
+  if(i===0){SC.person(g,220,330,t,f,a);SC.person(g,420,330,t+1,!f,b);g.fillStyle='#6a7278';g.fillRect(310,120,20,210)}
+  else if(i===1){SC.person(g,250,330,t*2,f,a);SC.person(g,390,330,t*2+1,!f,b);g.fillStyle='#4d6b3b';g.fillRect(0,330,VW,150);for(let k=0;k<30;k++){g.fillStyle='rgba(255,255,255,.6)';g.fillRect((k*53+t*120)%VW,(k*37+t*300)%330,2,10)}}
+  else if(i===2){SC.person(g,180,330,0,f,a);SC.person(g,460,330,0,!f,b);g.fillStyle='rgba(0,0,0,.25)';g.fillRect(0,0,VW,VH)}
+  else if(i===3){SC.person(g,120-t*10,330,t,f,a);SC.person(g,520+t*10,330,t,!f,b);g.fillStyle='#55606a';g.fillRect(300,60,40,270)}
+  else if(i===4){SC.person(g,300-Math.max(0,40-t*20),330,t,f,a);SC.person(g,340+Math.max(0,40-t*20),330,t,!f,b)}
+  else{SC.person(g,290,330,0,f,a);SC.person(g,350,330,0,!f,b);g.fillStyle='#ffe9b0';g.beginPath();g.arc(320,120,30,0,Math.PI*2);g.fill()}
+  if(OPT.reduced)return;g.fillStyle=`rgba(0,0,0,${Math.max(0,.6-t*.6)})`;g.fillRect(0,0,VW,VH);
+ }
+};
+Scenes.defs.awakening={steps:[
+ {dur:2.2,text:'Darkness.',draw:(g,t)=>{SC.blackout(g,1)},sfx:()=>SFX.low()},
+ {dur:2.4,text:'A low mechanical hum.',cap:'[low mechanical hum]',draw:(g,t)=>{SC.blackout(g,1);g.fillStyle=`rgba(120,140,150,${.05+.04*Math.sin(t*20)})`;g.fillRect(0,0,VW,VH)}},
+ {dur:4.5,text:'“Subject 13. Consciousness restored. Neurological response within acceptable parameters.”',cap:'[synthetic voice, calm]',draw:(g,t)=>{SC.blackout(g,1);g.fillStyle=`rgba(255,255,255,${Math.min(.15,t*.05)})`;g.fillRect(0,0,VW,VH)},sfx:()=>SFX.voice()},
+ {dur:3.5,text:'Your eyes open. A table. A cold room under a flickering light. Your head is pounding.',draw:(g,t)=>SC.room(g,t,true)},
+ {dur:3.5,text:'Gray institutional clothing. A small bandage on your forearm, and beneath it, a number inked into the skin.',draw:(g,t)=>SC.forearm(g,t)},
+ {dur:2.2,text:'13.',draw:(g,t)=>SC.forearm(g,t+2)},
+ {dur:3.5,text:'You try to remember your name. Nothing.',draw:(g,t)=>SC.room(g,t,false)},
+ {dur:3.6,text:'Then, faintly, from somewhere in the wall: three quiet taps. A pause. Two more.',cap:'[three taps · pause · two taps]',draw:(g,t)=>{SC.room(g,t,false);if(t>.5&&t<2.6){g.fillStyle=`rgba(255,255,255,${Math.abs(Math.sin(t*9))*.6})`;g.fillRect(126,200,8,8)}},sfx:()=>SFX.taps(.4)},
+ {dur:3.2,text:'Someone is there. A small camera follows your movement, and the door begins to cycle.',cap:'[servo whine]',draw:(g,t)=>SC.room(g,t,false)},
+],end(){G.stage='assess';saveGame();buildFloor();ui.say('Take in the room. You can try the door, or lie back and pretend nothing happened.')}};
+Scenes.defs.escort={steps:[
+ {dur:3,text:'The thing in the doorway is shaped like a person and is not one. It does not speak. It gestures.',cap:'[heavy, even footsteps]',draw:(g,t)=>{SC.corridor(g,0);SC.robot(g,420,300,0);SC.person(g,250,300,0,G.gender==='female')},sfx:()=>SFX.robotStep()},
+ {dur:5,text:'It walks you down the detention corridor. Every door you pass is sealed and opaque. Something is behind each of them. You cannot see what.',draw:(g,t)=>{SC.corridor(g,t);SC.robot(g,360,300,t);SC.person(g,280,300,t,G.gender==='female')},sfx:()=>{for(let i=0;i<8;i++)SFX.robotStep(false)}},
+ {dur:3.6,text:'“Subject 13 transferred to individual holding. Next evaluation pending.”',cap:'[synthetic voice]',draw:(g,t)=>{SC.corridor(g,t);SC.robot(g,360,300,t);SC.person(g,280,300,t,G.gender==='female')},sfx:()=>SFX.voice()},
+ {dur:3.4,text:'The far cell. A bolted bed, a sink, a camera, a smooth door. The door seals. Nothing taps on any wall in here.',draw:(g,t)=>{g.fillStyle='#2f3339';g.fillRect(0,0,VW,VH);g.fillStyle='#4e5a63';g.fillRect(100,140,120,220);g.fillStyle='#aab5bc';g.fillRect(480,160,60,50);g.fillStyle='#2b3238';g.fillRect(300,40,30,20);g.fillStyle='#e04848';g.fillRect(311,46,8,6);g.fillStyle='#55606a';g.fillRect(260,330,120,150)},sfx:()=>SFX.door()},
+]};
+Scenes.defs.captive={steps:[
+ {dur:4,text:'Through the glass: a holding room like yours. Someone lies on the floor beside the bed, one leg wrapped and splinted badly.',draw:(g,t)=>SC.window(g,t)},
+ {dur:4,text:'',draw:(g,t)=>SC.window(g,t),on(){Scenes.cur.def.steps[1].text=pronoun().cap+' lifts '+pronoun().their+' head. '+pronoun().cap+' sees you. Something crosses '+pronoun().their+' face that you have no name for, and then '+pronoun().they+' is weeping.'}},
+ {dur:4.5,text:'“You came back,” the captive says, through the glass, too quietly to be meant for the camera. “You always come back.”',draw:(g,t)=>SC.window(g,t)},
+ {dur:4.2,text:'',draw:(g,t)=>SC.window(g,t),on(){Scenes.cur.def.steps[3].text=pronoun().cap+' tries to stand and cannot. '+pronoun().cap+' cannot follow you. '+pronoun().cap+' knows it, and tells you to go.'}},
+ {dur:4,text:'You have no memory of this person. The sound of their voice hurts. You do not know what they are to you. You know you are leaving them here.',draw:(g,t)=>SC.window(g,t),sfx:()=>SFX.taps(1)},
+]};
+Scenes.defs.daylight={steps:[
+ {dur:3.5,text:'The gate opens. Wind moves through the trees. For the first time you can remember, there is nothing above you.',cap:'[wind]',draw:(g,t)=>{SC.sky(g,t,true);SC.gate(g,true)},sfx:()=>{SFX.gate();SFX.wind()}},
+ {dur:4,text:'You can leave. You are free. The road goes somewhere. Someone up there will give you a name.',draw:(g,t)=>SC.sky(g,t+4,true)},
+ {dur:4,text:'Someone is still below. Thirteen floors down, with a splinted leg, in a facility that has started to fail.',draw:(g,t)=>{SC.sky(g,t+8,true);g.fillStyle='rgba(0,0,0,.35)';g.fillRect(0,0,VW,VH)},sfx:()=>SFX.taps(.5)},
+ {hold:true,choice:true,text:'',draw:(g,t)=>SC.sky(g,t+12,true),on(){ui.dialog('DAYLIGHT',['Both paths are real. Neither is the wrong one.'],[['LEAVE — walk into the daylight',()=>{Scenes.finish();endLeave()}],['RETURN — go back down for them',()=>{Scenes.finish();beginReturn()}]]);dialogOnEscape=null}},
+],noSkip:false};
+function endLeave(){G.finished=true;G.ending='leave';saveGame();Scenes.play('escapeComplete')}
+function beginReturn(){G.phase='r';G.returnChosen=true;G.floor=1;G.stage='';saveGame();Scenes.play('reentry',()=>{buildFloor();saveGame();ui.say('The facility is failing. Lower lifts are the way down.')})}
+Scenes.defs.escapeComplete={steps:[
+ {dur:4.5,text:'You walk toward the horizon. Behind you the facility sinks back into the hill as if it had never been there.',draw:(g,t)=>{SC.sky(g,t+10,true);SC.person(g,320-t*8,340,t,G.gender==='female')},sfx:()=>SFX.wind()},
+ {dur:4.5,text:'You have survived. You will live. You will be given a name and you will answer to it.',draw:(g,t)=>SC.sky(g,t+14,true)},
+ {dur:5,text:'Some nights, in the quiet, you catch yourself tapping on the table. Three. A pause. Two. You never learn what it means.',cap:'[three taps · pause · two taps]',draw:(g,t)=>{SC.sky(g,t+18,true);SC.blackout(g,Math.min(.9,t*.25))},sfx:()=>SFX.taps(1.5)},
+ {dur:3,text:'ESCAPE COMPLETE',draw:(g,t)=>{SC.blackout(g,1);g.fillStyle='#eef5f7';g.font='bold 30px monospace';g.textAlign='center';g.fillText('13',320,200);g.font='14px monospace';g.fillStyle='#8fa7b4';g.fillText('ENDING A · ESCAPE COMPLETE',320,230);g.textAlign='left'}},
+],end(){ui.dialog('ESCAPE COMPLETE',['You survived. The story keeps its silence about what you left behind.',{cls:'fine',text:G.memories.length?'Fragments recovered: '+G.memories.length+' of 13.':'No fragments recovered. The ending stands on its own.'}],[['Begin again',()=>{G=null;titleScreen()}]]);prevModal='title'}};
+Scenes.defs.reentry={steps:[
+ {dur:4,text:'You turn around. The gate has already dropped behind you; the alarms you set off are still running.',cap:'[distant alarms]',draw:(g,t)=>{SC.sky(g,t+14,true);SC.gate(g,false);g.fillStyle=`rgba(200,60,60,${.1+.1*Math.sin(t*6)})`;g.fillRect(0,0,VW,VH)},sfx:()=>SFX.alarm()},
+ {dur:4.5,text:'The vehicle bay door is bent off its track. Inside, the lights are red and the floor is wet. Whatever was kept down there is not kept anymore.',draw:(g,t)=>SC.corridor(g,t*.3,true),sfx:()=>SFX.low()},
+ {dur:3.5,text:'Thirteen floors. Lower lifts only. You start walking.',draw:(g,t)=>{SC.corridor(g,t*.3,true);SC.person(g,200+t*30,300,t,G.gender==='female')}},
+]};
+Scenes.defs.childhood={steps:[
+ {dur:4,text:'A photograph falls out of the file, and you are somewhere else: a house, a creek, a pipe that runs between two bedrooms.',draw:(g,t)=>SC.kids(g,t)},
+ {dur:4.5,text:'Two children tapping on it after lights-out. Code out of a library book. One of them keeps getting the same letter wrong.',cap:'[tapping on a pipe]',draw:(g,t)=>SC.kids(g,t+4),sfx:()=>SFX.taps(.3)},
+ {dur:4.5,text:'The other one starts getting it wrong on purpose. After that it was theirs: the mistake was the signature. Nobody else would ever send it right.',cap:'[three taps · pause · two taps]',draw:(g,t)=>SC.kids(g,t+8),sfx:()=>SFX.taps(.6)},
+ {dur:3.5,text:'You do not remember which of you made the mistake first.',draw:(g,t)=>{SC.kids(g,t+12);SC.blackout(g,Math.min(.8,t*.3))}},
+]};
+Scenes.defs.reunion={steps:[
+ {dur:4,text:'The holding room has half collapsed. The captive is where you left them, against the wall by the bed, splinted leg out straight. They look up.',draw:(g,t)=>{SC.window(g,t);g.fillStyle='rgba(60,40,30,.5)';g.fillRect(0,0,VW,VH)},sfx:()=>SFX.low()},
+ {dur:4,text:'Neither of you can stand anymore. You get across the floor the other way. Your hands find each other without being told.',draw:(g,t)=>{SC.window(g,t);SC.blackout(g,.3)}},
+ {dur:4.5,text:'“Little Star,” they whisper. It is not your name. It is the only name you have ever answered to.',cap:'[whispered]',draw:(g,t)=>{SC.window(g,t);SC.blackout(g,.45)}},
+ {dur:3.5,text:'They tap it on the back of your hand. Three. A pause. Two. Wrong in exactly the right way.',cap:'[three taps · pause · two taps]',draw:(g,t)=>{SC.window(g,t);SC.blackout(g,.55)},sfx:()=>SFX.taps(.3)},
+ {dur:3.6,text:'And then it comes, all of it, without warning:',draw:(g,t)=>SC.blackout(g,1)},
+ {dur:4,text:'Two children and a pipe between two rooms.',draw:(g,t)=>SC.vignette(g,t,0),sfx:()=>SFX.chime()},
+ {dur:4,text:'Running through summer rain, laughing too hard to breathe.',draw:(g,t)=>SC.vignette(g,t,1)},
+ {dur:4,text:'A kitchen, years later, and the worst thing either of you ever said.',draw:(g,t)=>SC.vignette(g,t,2)},
+ {dur:4,text:'A door closing. A long time with no answer on the other end of the pipe.',draw:(g,t)=>SC.vignette(g,t,3)},
+ {dur:4,text:'Finding each other again. Neither of you saying sorry, because neither of you needed to.',draw:(g,t)=>SC.vignette(g,t,4),sfx:()=>SFX.taps(.5)},
+ {dur:4.5,text:'The years after. Ordinary years. The best ones.',draw:(g,t)=>SC.vignette(g,t,5)},
+ {dur:4.5,text:'You cannot name what you were to each other. You know only that you were never alone, and you are not alone now.',draw:(g,t)=>{SC.window(g,t);SC.blackout(g,.7)}},
+ {dur:4,text:'The lights go out. Your hands remain together.',draw:(g,t)=>{SC.window(g,t);SC.blackout(g,Math.min(1,.7+t*.1))},sfx:()=>SFX.low()},
+ {dur:3,text:'13 — COMPLETE',draw:(g,t)=>{SC.blackout(g,1);g.fillStyle='#eef5f7';g.font='bold 30px monospace';g.textAlign='center';g.fillText('13',320,200);g.font='14px monospace';g.fillStyle='#8fa7b4';g.fillText('ENDING B · 13 COMPLETE',320,230);g.textAlign='left'}},
+],end(){G.finished=true;G.ending='return';saveGame();ui.dialog('13 — COMPLETE',['Both of you, together, at the bottom of the world. It is not a defeat.',{cls:'fine',text:G.memories.length?'Fragments recovered: '+G.memories.length+' of 13.':'No fragments recovered. The ending did not need them.'}],[['Begin again',()=>{G=null;titleScreen()}]]);prevModal='title'}};
+
+/* --- 90_main.js --- */
+/* ============================================================
+   MAIN · input, fixed-step loop, boot, test hooks
+   ============================================================ */
+const MOVE_KEYS=new Set(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','control','e',' ']);
+window.addEventListener('keydown',e=>{
+ const k=e.key.toLowerCase();
+ if(e.repeat&&k!=='e')return;
+ Audio13.resume();
+ if(modal==='dialog'||modal==='title'){dialogKey(e);return}
+ if(modal==='scene'){Scenes.key(e);return}
+ if(puzzle){puzzleKey(e);return}
+ if(MOVE_KEYS.has(k)||k==='escape'||k==='j'||k==='r')e.preventDefault();
+ if(modal==='capture'){if(k===' ')captureAttempt();return}
+ if(k==='escape'){pauseMenu();return}
+ if(k==='j'){journalDialog(null);return}
+ if(!e.repeat){keys.add(k);if(k==='e'||k==='r')pressed.add(k)}
+});
+window.addEventListener('keyup',e=>{keys.delete(e.key.toLowerCase())});
+window.addEventListener('blur',()=>{keys.clear();pressed.clear();if(R)R.hold=null});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){keys.clear();pressed.clear()}});
+$('#saveBtn').onclick=()=>{if(G&&R&&modal==='none'){saveGame()&&ui.say('Saved.')}else ui.say('Save from the pause menu or during play.')};
+$('#menuBtn').onclick=()=>{if(modal==='none')pauseMenu();else if(modal==='title')titleScreen()};
+canvas.addEventListener('click',()=>{Audio13.resume();$('#screen').focus({preventScroll:true})});
+
+let last=0,acc=0,autoStep=!TEST,frames=0;
+function simulate(dt){if(modal==='scene')Scenes.step(dt);else if(puzzle)stepPuzzle(dt);else step(dt)}
+function frame(t){
+ const dt=Math.min(.1,(t-last)/1000||0);last=t;
+ if(autoStep&&G){acc+=dt;let n=0;while(acc>=STEP&&n<6){simulate(STEP);acc-=STEP;n++}if(n===6)acc=0}
+ draw();if(G&&R&&frames++%6===0)ui.alertMeter();
+ requestAnimationFrame(frame);
+}
+loadOpts();titleScreen();requestAnimationFrame(frame);
+
+/* ---------- Test hooks: only when the page is opened with #test ---------- */
+if(TEST){
+ const api={
+  get G(){return G},get R(){return R},get modal(){return modal},get puzzle(){return puzzle},get scene(){return Scenes.cur},get FLOOR(){return FLOOR},
+  set auto(v){autoStep=v},get auto(){return autoStep},
+  step(n=1){for(let i=0;i<n;i++)simulate(STEP)},
+  seconds(s){api.step(Math.round(s/STEP))},
+  key(k,down=true){k=k.toLowerCase();if(down){keys.add(k);if(k==='e'||k==='r')pressed.add(k)}else keys.delete(k)},
+  press(k){api.key(k,true);api.step(1);api.key(k,false);api.step(1)},
+  release(){keys.clear();pressed.clear()},
+  click(label){const b=dialogButtons.find(b=>b.textContent.toLowerCase().startsWith(label.toLowerCase()));if(!b)return false;b.click();return true},
+  buttons(){return dialogButtons.map(b=>b.textContent)},
+  sceneNext(){Scenes.next()},sceneSkip(){Scenes.skip()},sceneFinish(){if(Scenes.cur)Scenes.finish()},
+  grid(mask){if(!puzzle||puzzle.kind!=='grid')return null;puzzle.mask=mask;const r=puzzle.onSubmit(mask);if(r&&r.close)closePuzzle();return r},
+  gridCancel(){if(puzzle){const f=puzzle.onCancel;closePuzzle();f&&f()}},
+  keypad(d){if(!puzzle||puzzle.kind!=='keypad')return null;const r=puzzle.onSubmit(d);if(r&&r.close)closePuzzle();return r},
+  seqSolve(){if(!puzzle||puzzle.kind!=='sequence')return false;const p=puzzle;while(p.phase==='show')api.step(10);for(const s of p.seq){puzzleKey({key:['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'][s],preventDefault(){}})}api.seconds(1);return true},
+  seqFail(){if(!puzzle||puzzle.kind!=='sequence')return false;const p=puzzle;while(p.phase==='show')api.step(10);const wrong=(p.seq[0]+1)%4;puzzleKey({key:['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'][wrong],preventDefault(){}});return p.phase==='fail'},
+  captureSpace(){captureAttempt()},
+  tile(){return B.tileOf(R.player)},
+  near(){return nearestInteractable()},prompt(){return promptFor(nearestInteractable())},
+  path(tx,ty,avoid=false){const [sx,sy]=B.tileOf(R.player);return findPath(sx,sy,tx,ty,false,avoid)},
+  // Physically walk the player along a BFS path by feeding movement keys into the real simulation.
+  walkTo(tx,ty,opts={}){const stance=opts.stance||'walk';const maxFrames=opts.maxFrames||4000;
+   const [sx,sy]=B.tileOf(R.player);let path=findPath(sx,sy,tx,ty,false,!opts.ignoreHazards);if(!path)return {ok:false,reason:'nopath',from:[sx,sy]};const resets=R.resets;
+   path.push([tx,ty]);let frames=0;
+   for(const [wx,wy] of path){const c=tc(wx,wy);let guard=0;
+    while(dist(R.player,c)>3&&guard<600){
+     if(modal!=='none')return {ok:false,reason:'modal:'+modal,at:B.tileOf(R.player)};if(R.resets!==resets){keys.clear();return {ok:false,reason:'reset',at:B.tileOf(R.player)}}
+     keys.clear();if(stance==='run')keys.add('shift');if(stance==='crouch')keys.add('control');
+     const dx=c.x-R.player.x,dy=c.y-R.player.y;if(Math.abs(dx)>1.5)keys.add(dx>0?'d':'a');if(Math.abs(dy)>1.5)keys.add(dy>0?'s':'w');
+     simulate(STEP);frames++;guard++;if(frames>maxFrames){keys.clear();return {ok:false,reason:'timeout',at:B.tileOf(R.player)}}
+    }
+    if(guard>=600){keys.clear();return {ok:false,reason:'stuck',at:B.tileOf(R.player),want:[wx,wy]}}
+   }
+   keys.clear();simulate(STEP);return {ok:true,at:B.tileOf(R.player),frames};
+  },
+  use(){api.press('e')},
+  holdE(sec){keys.add('e');pressed.add('e');api.step(1);api.seconds(sec);keys.delete('e');api.step(1)},
+  fs(){return FS()},flag(n){return FS()[n]},
+  save(){return saveGame()},reload(){const s=loadGame();if(!s)return false;G=s;modal='none';buildFloor();return true},
+  reset(){resetToCheckpoint('test reset')},
+  jump(floor,phase){G.floor=floor;G.phase=phase;G.stage='';modal='none';buildFloor();saveGame();return [G.floor,G.phase]},
+  storage(){try{return localStorage.getItem(SAVE_KEY)}catch(e){return null}},
+  clearStorage(){try{localStorage.removeItem(SAVE_KEY);localStorage.removeItem(OLD_KEY)}catch(e){}},
+  seedOld(){try{localStorage.setItem(OLD_KEY,'{"floor":5}')}catch(e){}},
+  setOpt(k,v){OPT[k]=v;saveOpts()},
+  canSee(i=0){return canSee(R.guards[i])},canHear(i=0){return canHear(R.guards[i])},
+  guard(i=0){const g=R.guards[i];return g?{x:g.x,y:g.y,mode:g.mode,angle:g.angle,disabled:g.disabled,active:g.active,tile:B.tileOf(g)}:null},
+  subject(i=0){const s=R.subjects[i];return s?{x:s.x,y:s.y,mode:s.mode,tile:B.tileOf(s)}:null},
+  setGuard(i,o){Object.assign(R.guards[i],o)},setSubject(i,o){Object.assign(R.subjects[i],o)},
+  setPlayer(tx,ty){const c=tc(tx,ty);R.player.x=c.x;R.player.y=c.y},
+  timers(){return Object.assign({},R.timers)},
+  announceLog:[],
+ };
+ const origAnnounce=ui.announce;ui.announce=t=>{api.announceLog.push(t);origAnnounce(t)};
+ const origSay=ui.say;api.sayLog=[];ui.say=t=>{api.sayLog.push(t);origSay(t)};
+ window.__13=api;
+}
+})();

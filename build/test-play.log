@@ -1,0 +1,50 @@
+== LEAVE RUN (female, table choice, alcove route, zero memories) ==
+  ok 13e -> await-escort (now F13e)
+  ok 13e-afterEscort (now F12e)
+  ok 12e (now F11e)
+  ok 11e (now F10e)
+  ok 10e (now F9e)
+  ok 9e (now F8e)
+  ok 8e (now F7e)
+  ok 7e (now F6e)
+  ok 6e (now F5e)
+  ok 5e (now F4e)
+  ok 4e (now F3e)
+  ok 3e (now F2e)
+  ok 2e (now F1e)
+  ok 1e -> choice (now F1e)
+  leave ending: true leave memories 0 saved.finished true leave
+  visited escape states: 13 13e 12e 11e 10e 9e 8e 7e 6e 5e 4e 3e 2e 1e
+  finished save resumes to ending: ok
+== RETURN RUN (male, door choice, dash route, zero memories, save/reload mid-timer) ==
+  ok 13e -> await-escort (now F13e)
+  ok 13e-afterEscort (now F12e)
+  ok 12e (now F11e)
+  ok 11e (now F10e)
+  ok 10e (now F9e)
+  ok 9e (now F8e)
+  ok 8e (now F7e)
+  ok 7e (now F6e)
+  ok 6e (now F5e)
+  ok 5e (now F4e)
+  ok 4e (now F3e)
+  ok 3e (now F2e)
+  ok 2e (now F1e)
+  ok 1e -> choice (now F1e)
+  return begins at {"floor":1,"phase":"r","tile":[20,1],"chosen":true}
+  ok 1r (now F2r)
+  ok 2r (now F3r)
+  ok 3r (now F4r)
+  ok 4r (now F5r)
+  ok 5r (now F6r)
+  ok 6r (now F7r)
+  ok 7r (now F8r)
+  ok 8r (now F9r)
+  ok 9r (now F10r)
+  ok 10r (now F11r)
+  ok 11r (now F12r)
+  ok 12r (now F13r)
+  ok 13r -> reunion (now F13r)
+  return ending: true return memories 0 saved.ending return [ 'Begin again' ]
+  visited states: 26 13e 12e 11e 10e 9e 8e 7e 6e 5e 4e 3e 2e 1e 1r 2r 3r 4r 5r 6r 7r 8r 9r 10r 11r 12r 13r
+requests: 1 console errors: 0 []
